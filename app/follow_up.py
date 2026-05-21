@@ -11,6 +11,7 @@ import logging
 import time
 
 from app.http.inference import chat_complete
+from app.http.usage import UsageTokens
 from app.http.rerank import rerank_texts
 from app.logging_config import logger
 
@@ -158,7 +159,7 @@ async def _generate_follow_up_candidates(
     session_id: str,
     trace_id: str | None = None,
     conversation_id: str | None = None,
-) -> tuple[list[str], str]:
+) -> tuple[list[str], str, UsageTokens | None]:
     """One chat call: returns ``(candidates, raw)`` where ``candidates`` is the parsed
     ``{"follow_up_questions": [...]}`` list (between ``min_count`` and ``max_count``
     distinct strings) and ``raw`` is the unparsed assistant content (for logging)."""
@@ -183,7 +184,7 @@ async def _generate_follow_up_candidates(
         f'Return EXACTLY this shape with {min_count}-{max_count} entries:\n'
         '{"follow_up_questions": ["question 1", "question 2", "question 3"]}'
     )
-    raw = await chat_complete(
+    chat_result = await chat_complete(
         base_url=infer_base,
         model=model,
         messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
@@ -193,6 +194,7 @@ async def _generate_follow_up_candidates(
         trace_id=trace_id,
         conversation_id=conversation_id,
     )
+    raw = chat_result.content
     candidates, empty_reason = _parse_follow_up_json(raw)
     if not candidates:
         preview = _preview_for_log(raw) if raw.strip() else "-"
@@ -205,7 +207,7 @@ async def _generate_follow_up_candidates(
             preview,
             extra={"follow_up_empty_reason": empty_reason},
         )
-    return candidates, raw
+    return candidates, raw, chat_result.usage
 
 
 async def _rerank_follow_up_strings(
@@ -281,14 +283,14 @@ async def generate_follow_ups(
     session_id: str,
     trace_id: str | None = None,
     conversation_id: str | None = None,
-) -> tuple[list[str], int, int]:
-    """Returns ``(questions, chat_ms, rerank_ms)``; times are zero when skipped or on failure."""
+) -> tuple[list[str], int, int, UsageTokens | None]:
+    """Returns ``(questions, chat_ms, rerank_ms, chat_usage)``; times are zero when skipped."""
     if not chunks_used:
         logger.info(
             "follow_up_questions_empty reason=no_chunks_used",
             extra={"follow_up_empty_reason": "no_chunks_used"},
         )
-        return [], 0, 0
+        return [], 0, 0, None
     min_gen = max(3, follow_up_candidates - 3)
     max_gen = follow_up_candidates
     if min_gen > max_gen:
@@ -297,7 +299,7 @@ async def generate_follow_ups(
     gen_budget = min(_FOLLOW_UP_GEN_MAX_TOKENS_CAP, max(256, max_tokens_main))
     gen_t0 = time.perf_counter()
     try:
-        candidates, raw = await _generate_follow_up_candidates(
+        candidates, raw, chat_usage = await _generate_follow_up_candidates(
             question=question,
             answer=answer,
             context_summary=summary,
@@ -317,10 +319,10 @@ async def generate_follow_ups(
             str(e),
             extra={"follow_up_empty_reason": "generation_failed", "error_message": str(e)},
         )
-        return [], _elapsed_ms(gen_t0), 0
+        return [], _elapsed_ms(gen_t0), 0, None
     gen_ms = _elapsed_ms(gen_t0)
     if not candidates:
-        return [], gen_ms, 0
+        return [], gen_ms, 0, chat_usage
     rr_t0 = time.perf_counter()
     ranked = await _rerank_follow_up_strings(
         question=question,
@@ -351,4 +353,4 @@ async def generate_follow_ups(
                 "latency_follow_up_rerank_ms": rr_ms,
             },
         )
-    return ranked, gen_ms, rr_ms
+    return ranked, gen_ms, rr_ms, chat_usage

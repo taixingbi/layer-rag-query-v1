@@ -6,11 +6,12 @@ import asyncio
 import json
 import time
 import uuid
-from collections.abc import AsyncIterator
+from dataclasses import dataclass
 
 import httpx
 
 from app.http._correlation import correlation_headers
+from app.http.usage import UsageTokens, parse_usage
 from app.logging_config import logger
 
 
@@ -24,6 +25,12 @@ def resolve_conversation_id(raw: str | None) -> str:
     return s if s else f"conv_{uuid.uuid4().hex}"
 
 
+@dataclass(frozen=True)
+class ChatCompletionResult:
+    content: str
+    usage: UsageTokens | None
+
+
 async def chat_complete(
     *,
     base_url: str,
@@ -35,12 +42,12 @@ async def chat_complete(
     trace_id: str | None = None,
     conversation_id: str | None = None,
     timeout: float = 60.0,
-) -> str:
-    """Return assistant content from one chat completion call. Correlation forwarded as
-    ``X-Request-Id`` / ``X-Session-Id`` / ``X-Trace-Id`` (last only when set).
+) -> ChatCompletionResult:
+    """Return assistant content and optional token usage from one chat completion call.
 
-    When ``conversation_id`` is non-empty after strip, it is sent in the JSON body as
-    ``conversation_id`` (same contract as ``layer-gateway-inference-v1``)."""
+    Correlation forwarded as ``X-Request-Id`` / ``X-Session-Id`` / ``X-Trace-Id`` (last only
+    when set). When ``conversation_id`` is non-empty after strip, it is sent in the JSON body.
+    """
     url = f"{base_url.rstrip('/')}/v1/chat/completions"
     payload: dict[str, object] = {
         "model": model,
@@ -69,6 +76,7 @@ async def chat_complete(
         raise RuntimeError(f"Unexpected chat response shape: {data!r}") from e
 
     reply = content if isinstance(content, str) else str(content)
+    usage = parse_usage(data)
     logger.info(
         "chat_complete ok url=%s model=%s max_tokens=%s reply_chars=%s",
         url,
@@ -76,10 +84,10 @@ async def chat_complete(
         max_tokens,
         len(reply),
     )
-    return reply
+    return ChatCompletionResult(content=reply, usage=usage)
 
 
-async def chat_complete_stream(
+async def chat_complete_collect(
     *,
     base_url: str,
     model: str,
@@ -90,18 +98,19 @@ async def chat_complete_stream(
     trace_id: str | None = None,
     conversation_id: str | None = None,
     timeout: float = 60.0,
-) -> AsyncIterator[str]:
-    """Yield assistant ``content`` deltas as they arrive from a streaming chat-completions
-    call (``stream: true``). Forwards correlation as ``X-Request-Id`` / ``X-Session-Id`` /
-    ``X-Trace-Id`` (last only when set). Optional ``conversation_id`` is sent in the JSON
-    body when non-empty (gateway thread id). On exit, emits one structured log line with TTFT
-    (time-to-first-token, ms) and total generation time (ms) for SLO dashboards."""
+) -> ChatCompletionResult:
+    """Buffer a streaming chat completion; return full text and usage from the final chunk.
+
+    Requests ``stream_options.include_usage`` so gateways that support OpenAI streaming
+    usage emit token counts on the last SSE frame.
+    """
     url = f"{base_url.rstrip('/')}/v1/chat/completions"
     payload: dict[str, object] = {
         "model": model,
         "messages": messages,
         "max_tokens": max_tokens,
         "stream": True,
+        "stream_options": {"include_usage": True},
     }
     cid = (conversation_id or "").strip()
     if cid:
@@ -113,6 +122,8 @@ async def chat_complete_stream(
     t0 = time.perf_counter()
     ttft_ms: int | None = None
     char_count = 0
+    buf: list[str] = []
+    usage: UsageTokens | None = None
     try:
         async with httpx.AsyncClient() as client:
             async with client.stream(
@@ -133,6 +144,9 @@ async def chat_complete_stream(
                         chunk = json.loads(body)
                     except json.JSONDecodeError:
                         continue
+                    chunk_usage = parse_usage(chunk)
+                    if chunk_usage:
+                        usage = chunk_usage
                     choices = chunk.get("choices") or [{}]
                     delta = (choices[0] or {}).get("delta", {}).get("content") or ""
                     if not delta:
@@ -140,12 +154,8 @@ async def chat_complete_stream(
                     if ttft_ms is None:
                         ttft_ms = int(round((time.perf_counter() - t0) * 1000))
                     char_count += len(delta)
-                    yield delta
+                    buf.append(delta)
     except asyncio.CancelledError:
-        # Client disconnect / Pause: closing the `async with` blocks above tears down
-        # the TCP connection to the upstream so vLLM cancels its in-flight generation
-        # (frees the GPU slot). Log structured before re-raising so ops can distinguish
-        # cancel from completion.
         cancel_ms = int(round((time.perf_counter() - t0) * 1000))
         cancel_ttft = ttft_ms if ttft_ms is not None else 0
         logger.warning(
@@ -176,3 +186,4 @@ async def chat_complete_stream(
         gen_ms,
         extra={"ttft_ms": final_ttft, "gen_ms": gen_ms},
     )
+    return ChatCompletionResult(content="".join(buf), usage=usage)

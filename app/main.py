@@ -22,6 +22,7 @@ from app.access import RagUser
 from app.asyncio_util import run_async
 from app.http.embed import embed_text as _embed_text_async
 from app.http.inference import resolve_conversation_id
+from app.http.usage import UsageTokens
 from app.logging_config import logger
 from app.qdrant.client import create_async_client, resolve_connection_params
 from app.rag_answer import complete_rag_answer, complete_rag_answer_stream
@@ -114,6 +115,7 @@ def _answer_payload(
     session_id: str,
     trace_id: str | None,
     conversation_id: str,
+    usage: dict[str, UsageTokens],
 ) -> dict[str, Any]:
     """Build stable HTTP/MCP response payload (conditionally including retrieval_hits)."""
     out: dict[str, Any] = {
@@ -121,6 +123,7 @@ def _answer_payload(
         "citations": citations,
         "follow_up_questions": follow_up_questions,
         "latency_ms": latency_ms,
+        "usage": usage,
         "request_id": request_id,
         "session_id": session_id,
         "trace_id": trace_id,
@@ -144,7 +147,7 @@ async def answer_from_inference_payload_async(
     if body.k_max < body.k:
         raise ValueError("k_max must be >= k")
     wants_hits = body.wants_retrieval_hits()
-    answer, citations, follow_up_questions, latency_ms, retrieval_hits = await complete_rag_answer(
+    answer, citations, follow_up_questions, latency_ms, retrieval_hits, usage = await complete_rag_answer(
         body.question,
         body.collection_base,
         request_id,
@@ -177,6 +180,7 @@ async def answer_from_inference_payload_async(
         session_id=session_id,
         trace_id=trace_id,
         conversation_id=conversation_id,
+        usage=usage,
     )
 
 
@@ -247,7 +251,7 @@ def answer_from_inference(
         raise ValueError("follow_up_final must be <= follow_up_candidates")
     wants_hits = include_retrieval_hits or debug or trace_retrieval or return_retrieval_hits
     conv = resolve_conversation_id(conversation_id)
-    answer, citations, follow_up_questions, latency_ms, retrieval_hits = run_async(
+    answer, citations, follow_up_questions, latency_ms, retrieval_hits, usage = run_async(
         complete_rag_answer(
             question,
             collection_base,
@@ -280,6 +284,7 @@ def answer_from_inference(
         session_id=session_id,
         trace_id=None,
         conversation_id=conv,
+        usage=usage,
     )
 
 

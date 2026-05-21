@@ -52,6 +52,7 @@ The HTTP status is locked at **200** as soon as headers flush. Errors that occur
 | `answer_end` | `{}` | After the last `answer_delta` for this turn. |
 | `citations` | `{"items":[{cite_id,chunk_id,source,text}, …]}` | After the final answer is assembled and citations are extracted. |
 | `follow_up_questions` | `{"items":["…"]}` | After follow-up generation completes. Empty list when disabled or empty. |
+| `usage` | `{"chat","follow_up_chat","total"}` each with `prompt_tokens`, `completion_tokens`, `total_tokens` | Token usage from upstream chat completions; see [schema.md](schema.md#usage). All zeros when the gateway omits usage. |
 | `retrieval_hits` | `{"items":[…]}` | Only when the request asked for hits (`include_retrieval_hits`, `debug`, `trace_retrieval`, or `return_retrieval_hits`). |
 | `error` | `{"detail":"<str>"}` | Upstream / pipeline failure. Always followed by `done`. |
 | `done` | `{}` | Final sentinel — clients should close the connection. |
@@ -71,6 +72,7 @@ citations
 follow_up_questions
 latency(phase=follow_up_chat)
 latency(phase=follow_up_rerank)
+usage
 [retrieval_hits]
 latency(phase=total)
 done
@@ -90,6 +92,8 @@ answer_end
 latency(chat)                ← cumulative wall time across all chat attempts
 citations
 follow_up_questions
+latency(follow_up_*)
+usage
 …
 done
 ```
@@ -232,7 +236,7 @@ curl -N -sS -X POST 'http://127.0.0.1:8000/v1/rag/query' \
   -d '{"question":"what is taixing visa","collection_base":"taixing_knowledge","k":5,"k_max":50,"stream":true}'
 ```
 
-`-N` disables curl's own output buffering. Both forms expect `event: meta`, three `latency` frames for the retrieval pipeline, `event: answer_start`, several `event: answer_delta` frames, `event: answer_end`, more `latency` frames, `event: citations`, `event: follow_up_questions`, `event: latency` with `phase=total`, and finally `event: done`.
+`-N` disables curl's own output buffering. Both forms expect `event: meta`, three `latency` frames for the retrieval pipeline, `event: answer_start`, several `event: answer_delta` frames, `event: answer_end`, more `latency` frames, `event: citations`, `event: follow_up_questions`, `event: usage`, `event: latency` with `phase=total`, and finally `event: done`.
 
 ## Example: minimal Python client
 

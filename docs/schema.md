@@ -113,6 +113,7 @@ Default mode. Correlation ids appear in the **body** and are echoed as response 
 | `citations` | yes | array | Passages **referenced** in `answer` via `[n]` (see [Citation](#citation)). |
 | `follow_up_questions` | yes | array of string | Suggested next questions; `[]` when disabled or on failure. |
 | `latency_ms` | yes | object | Per-phase timings in milliseconds (see [Latency](#latency_ms)). |
+| `usage` | yes | object | Token counts from upstream chat completions (see [Usage](#usage)). |
 | `request_id` | yes | string | Same as `X-Request-Id`. |
 | `session_id` | yes | string | Same as `X-Session-Id`. |
 | `trace_id` | yes | string \| null | Same as `X-Trace-Id` when sent; else `null`. |
@@ -146,6 +147,11 @@ Default mode. Correlation ids appear in the **body** and are echoed as response 
     "follow_up_chat": 1684,
     "follow_up_rerank": 42
   },
+  "usage": {
+    "total": { "prompt_tokens": 4200, "completion_tokens": 380, "total_tokens": 4580 },
+    "chat": { "prompt_tokens": 3100, "completion_tokens": 120, "total_tokens": 3220 },
+    "follow_up_chat": { "prompt_tokens": 1100, "completion_tokens": 260, "total_tokens": 1360 }
+  },
   "request_id": "req-abc123",
   "session_id": "ses-xyz789",
   "trace_id": "trc-001",
@@ -175,6 +181,24 @@ Default mode. Correlation ids appear in the **body** and are echoed as response 
 | `chat` | integer | Main answer generation (cumulative across widen retries). |
 | `follow_up_chat` | integer | Follow-up LLM call. |
 | `follow_up_rerank` | integer | Follow-up candidate rerank. |
+
+#### Usage
+
+OpenAI-compatible token counts parsed from upstream `/v1/chat/completions` `usage` fields. When the gateway omits usage, counts are **zero** (shape is always present).
+
+| Phase key | Type | Description |
+|-----------|------|-------------|
+| `chat` | [UsageTokens](#usagetokens) | Sum of every main-answer completion (including NOT_FOUND widen attempts). |
+| `follow_up_chat` | [UsageTokens](#usagetokens) | Follow-up LLM call only; all zeros when follow-ups disabled or skipped. |
+| `total` | [UsageTokens](#usagetokens) | `chat` + `follow_up_chat`. |
+
+##### UsageTokens
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `prompt_tokens` | integer | |
+| `completion_tokens` | integer | |
+| `total_tokens` | integer | |
 
 #### Retrieval hit
 
@@ -249,6 +273,7 @@ data: <one-line JSON>
 | `answer_end` | `{}` | |
 | `citations` | `items` | Array of [Citation](#citation). |
 | `follow_up_questions` | `items` | Array of strings. |
+| `usage` | `chat`, `follow_up_chat`, `total` | Same object as JSON [Usage](#usage). |
 | `retrieval_hits` | `items` | Optional; same rows as JSON `retrieval_hits`. |
 | `error` | `detail` | Always followed by `done`. HTTP status stays **200**. |
 | `done` | `{}` | Terminal sentinel. |
