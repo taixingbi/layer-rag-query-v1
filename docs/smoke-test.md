@@ -42,7 +42,7 @@ Expected: Prometheus text exposition (`rag_query_http_requests_total`, `rag_quer
 
 ## Correlation headers
 
-`POST /v1/rag/query` reads correlation IDs **only from headers**. Putting `request_id`, `session_id`, or `trace_id` in the JSON body returns **400**.
+`POST /v1/rag/query` and MCP `tools/call` read correlation IDs **only from HTTP headers** (not the JSON body). Putting `request_id`, `session_id`, or `trace_id` in the RAG JSON body returns **400**.
 
 | Header | Required | Notes |
 |--------|----------|-------|
@@ -52,7 +52,7 @@ Expected: Prometheus text exposition (`rag_query_http_requests_total`, `rag_quer
 
 ## Access-control headers
 
-`POST /v1/rag/query` also reads identity from headers (header-only; putting `user_id`, `user_roles`, `user_groups`, or `user_teams` in the body returns **400**). The four dimensions drive a Qdrant payload filter on `payload.access.{roles,groups,teams}`. See [access-control.md](access-control.md) for the full semantics table (admin bypass, deny-by-default for untagged chunks, `anyuser` public default).
+Same header-only rule as correlation. The four dimensions drive a Qdrant payload filter on `payload.access.{roles,groups,teams}`. See [access-control.md](access-control.md) for the full semantics table (admin bypass, deny-by-default for untagged chunks, `anyuser` public default).
 
 | Header | Required | Notes |
 |--------|----------|-------|
@@ -63,24 +63,9 @@ Expected: Prometheus text exposition (`rag_query_http_requests_total`, `rag_quer
 
 Sending **no** access headers is the same as anonymous: the request asks for chunks whose `access.roles` contains `"anyuser"`. Untagged chunks (no `payload.access`) are returned only to admins.
 
-## RAG query — minimal (no correlation headers)
+## RAG query (`POST /v1/rag/query`)
 
-Same as default; logs and embedding calls use the server-generated `request_id` / `session_id` for this request. On **200** responses, the same values are echoed in `X-Request-Id` and `X-Session-Id` response headers (use `curl -D -` to capture them).
-
-```bash
-curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
-  -H "Content-Type: application/json" \
-  -d '{
-    "question": "what is taixing visa",
-    "collection_base": "taixing_knowledge",
-    "k": 5,
-    "k_max": 50
-  }'
-```
-
-## RAG query — default response
-
-`answer`, `citations`, `follow_up_questions`, `latency_ms`, `usage` (`chat`, `follow_up_chat`, `total` token counts — zeros when the inference gateway omits OpenAI-style `usage`), plus `request_id`, `session_id`, `trace_id` (JSON `null` when `X-Trace-Id` was omitted), and `conversation_id` (from JSON body or server-generated `conv_<hex>`). With explicit correlation (recommended behind gateways). On **200** responses, the same ids are also echoed as `X-Request-Id`, `X-Session-Id`, `X-Trace-Id` (when sent), and `X-Conversation-Id`.
+Default JSON response: `answer`, `citations`, `follow_up_questions`, `latency_ms`, `usage`, plus `request_id`, `session_id`, `trace_id`, and `conversation_id`. On **200**, ids are echoed as `X-Request-Id`, `X-Session-Id`, `X-Trace-Id` (when sent), and `X-Conversation-Id`.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
@@ -88,82 +73,6 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
   -H "X-Request-Id: req-abc123" \
   -H "X-Session-Id: ses-xyz789" \
   -H "X-Trace-Id: trace-001" \
-  -d '{
-    "question": "what is taixing visa",
-    "collection_base": "taixing_knowledge",
-    "k": 5,
-    "k_max": 50
-  }'
-```
-
-## RAG query — include retrieval_hits (debug)
-
-Adds `retrieval_hits` to the response. Equivalent flags: `include_retrieval_hits`, `debug`, `trace_retrieval`, `return_retrieval_hits`.
-
-```bash
-curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
-  -H "Content-Type: application/json" \
-  -H "X-Request-Id: req-abc123" \
-  -H "X-Session-Id: ses-xyz789" \
-  -d '{
-    "question": "what is taixing visa",
-    "collection_base": "taixing_knowledge",
-    "k": 5,
-    "k_max": 50,
-    "include_retrieval_hits": true
-  }'
-```
-
-## RAG query — disable follow-ups / reranker
-
-Single-pass evaluation; no chat for follow-ups, no cross-encoder rerank.
-
-```bash
-curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
-  -H "Content-Type: application/json" \
-  -H "X-Request-Id: req-abc123" \
-  -H "X-Session-Id: ses-xyz789" \
-  -d '{
-    "question": "what is taixing visa",
-    "collection_base": "taixing_knowledge",
-    "k": 5,
-    "k_max": 50,
-    "use_reranker": false,
-    "include_follow_up_questions": false,
-    "expand_on_not_found": false
-  }'
-```
-
-## RAG query — tune follow-ups
-
-`follow_up_candidates` ∈ `[3, 12]`; `follow_up_final` ∈ `[1, 8]` and **must be ≤ `follow_up_candidates`** (422 otherwise).
-
-```bash
-curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
-  -H "Content-Type: application/json" \
-  -H "X-Request-Id: req-abc123" \
-  -H "X-Session-Id: ses-xyz789" \
-  -d '{
-    "question": "what is taixing visa",
-    "collection_base": "taixing_knowledge",
-    "follow_up_candidates": 10,
-    "follow_up_final": 5
-  }'
-```
-
-## RAG query — streaming (SSE)
-
-Opt in with **either** of: `Accept: text/event-stream` header, or `"stream": true` in the JSON body. (Query-param triggers like `?stream=1` are not supported.) Response is `text/event-stream` with `Cache-Control: no-cache` and `X-Accel-Buffering: no`. See [streaming.md](streaming.md) for the full event sequence and error semantics; behind nginx-ingress, also set `nginx.ingress.kubernetes.io/proxy-buffering: "off"` on the route.
-
-Header style (`Accept: text/event-stream`). Identity headers are optional; this example includes them so the chunk-level filter is visible end-to-end.
-
-```bash
-curl -N -sS -X POST 'http://127.0.0.1:8000/v1/rag/query' \
-  -H "Content-Type: application/json" \
-  -H "Accept: text/event-stream" \
-  -H "X-Request-Id: req-stream-1" \
-  -H "X-Session-Id: ses-stream-1" \
-  -H "X-Trace-Id: trace-stream-1" \
   -H "X-User-Id: taixing" \
   -H "X-User-Roles: hr" \
   -H "X-User-Groups: engineering" \
@@ -176,138 +85,67 @@ curl -N -sS -X POST 'http://127.0.0.1:8000/v1/rag/query' \
   }'
 ```
 
-Body-flag style (handy when callers can't change the `Accept` header):
+**Tune follow-ups:** add `"follow_up_candidates": 10` and `"follow_up_final": 5` to the JSON (`follow_up_final` must be ≤ `follow_up_candidates`, else **422**).
+
+**Streaming (SSE):** add `-H "Accept: text/event-stream"` (or `"stream": true` in the body instead). Use `curl -N`. See [streaming.md](streaming.md). Expect `meta`, `latency` phases, `answer_delta` frames, `citations`, `follow_up_questions`, `done`.
 
 ```bash
 curl -N -sS -X POST http://127.0.0.1:8000/v1/rag/query \
   -H "Content-Type: application/json" \
-  -H "X-Request-Id: req-stream-2" \
-  -H "X-Session-Id: ses-stream-2" \
+  -H "Accept: text/event-stream" \
+  -H "X-Request-Id: req-abc123" \
+  -H "X-Session-Id: ses-xyz789" \
+  -H "X-Trace-Id: trace-001" \
+  -H "X-User-Id: taixing" \
+  -H "X-User-Roles: hr" \
+  -H "X-User-Groups: engineering" \
+  -H "X-User-Teams: rag-platform" \
   -d '{
     "question": "what is taixing visa",
     "collection_base": "taixing_knowledge",
     "k": 5,
-    "k_max": 50,
-    "stream": true
+    "k_max": 50
   }'
 ```
 
-Either request expects `meta`, retrieval `latency` phases, `answer_start`, several `answer_delta` frames (final answer only; widen retries do not stream `NOT_FOUND`), `answer_end`, `citations`, `follow_up_questions`, remaining `latency` events including `total`, and `done`. If the model triggers a context widen, you will also see one or more `retrieval_widen` events before `answer_start`. `-N` disables curl's own output buffering — without it the deltas batch on stdout.
+**Error cases:**
+
+```bash
+# request_id in body -> HTTP 400
+curl -sS -o /dev/stdout -w "\nHTTP %{http_code}\n" \
+  -X POST http://127.0.0.1:8000/v1/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{"question":"q","collection_base":"taixing_knowledge","request_id":"x","session_id":"y"}'
+
+# user_roles in body -> HTTP 400
+curl -sS -o /dev/stdout -w "\nHTTP %{http_code}\n" \
+  -X POST http://127.0.0.1:8000/v1/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{"question":"q","collection_base":"taixing_knowledge","user_roles":["admin"]}'
+```
 
 ## MCP over HTTP (`/v1/mcp`)
 
-For plain scripts and gateways, prefer **`POST /v1/rag/query`** above. The sections below call the same RAG logic through the **MCP Streamable HTTP** transport at `http://127.0.0.1:8000/v1/mcp` (tool **`rag_query`**, with `"stream": false` or `"stream": true` in arguments — same as the HTTP body flag).
+Prefer **`POST /v1/rag/query`** for plain JSON. MCP uses the same RAG logic via `tools/call` → `rag_query` with `"stream": true` or `false` in `arguments` (same meaning as the HTTP body flag).
 
-MCP responses are **SSE frames** (`event: message` + `data: {...}`), not raw JSON. Tool results arrive in `result.content[0].text` as a JSON string when `"stream": false`, or a JSON object with an `events` array when `"stream": true`.
-
-On **HTTP** transport, pass the same correlation and access headers as `POST /v1/rag/query` on **every** `POST /v1/mcp` call (including `tools/call`). Headers override `request_id`, `session_id`, and `trace_id` tool arguments when set. Stdio MCP (Cursor) has no HTTP headers — pass `request_id` / `session_id` in tool arguments instead.
-
-| Header | Required | Notes |
-|--------|----------|-------|
-| `X-Request-Id` | no | Overrides tool `request_id` when set. If header and tool arg are both blank, a UUID is generated. |
-| `X-Session-Id` | no | Overrides tool `session_id` when set. If header and tool arg are both blank, a UUID is generated. |
-| `X-Trace-Id` | no | Overrides tool `trace_id` when set. |
-| `X-User-Id` | no | Access control (see [access-control.md](access-control.md)). |
-| `X-User-Roles` | no | Comma-separated; default `anyuser` when absent. |
-| `X-User-Groups` | no | Comma-separated. |
-| `X-User-Teams` | no | Comma-separated. |
-
-Reusable header block for the examples below:
-
-```bash
-MCP_HDR=(
-  -H "X-Request-Id: req-mcp-1"
-  -H "X-Session-Id: ses-mcp-1"
-  -H "X-Trace-Id: trc-mcp-1"
-  -H "X-User-Id: taixing"
-  -H "X-User-Roles: hr"
-  -H "X-User-Groups: engineering"
-  -H "X-User-Teams: rag-platform"
-)
-```
-
-For `"stream": true`, use distinct ids (e.g. `req-mcp-stream-1`, `ses-mcp-stream-1`, `trc-mcp-stream-1`) in the header set below.
-
-### MCP session (run once per shell)
-
-Every MCP request after `initialize` must include the `mcp-session-id` response header from the handshake:
+MCP responses are **SSE frames** (`event: message` + `data: {...}`). Parse `result.content[0].text` (JSON string when not streaming events; `{"events": [...]}` when streaming).
 
 ```bash
 MCP_URL=http://127.0.0.1:8000/v1/mcp
 
-MCP_SESSION=$(curl -sS -D - -o /dev/null -X POST "${MCP_URL}" \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json, text/event-stream" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "initialize",
-    "params": {
-      "protocolVersion": "2025-03-26",
-      "capabilities": {},
-      "clientInfo": {"name": "curl-smoke", "version": "1.0"}
-    }
-  }' | awk -F': ' 'tolower($1)=="mcp-session-id" {print $2}' | tr -d '\r')
-
 curl -sS -X POST "${MCP_URL}" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
-  -H "mcp-session-id: ${MCP_SESSION}" \
-  -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' > /dev/null
-```
-
-### MCP `rag_query` — `"stream": false` (non-stream)
-
-Same JSON shape as `POST /v1/rag/query` (`answer`, `citations`, `follow_up_questions`, `latency_ms`, `usage`, correlation fields). Correlation ids come from the **HTTP headers** above (echoed in the JSON body).
-
-```bash
-curl -sS -X POST "${MCP_URL}" \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json, text/event-stream" \
-  -H "mcp-session-id: ${MCP_SESSION}" \
-  "${MCP_HDR[@]}" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 2,
-    "method": "tools/call",
-    "params": {
-      "name": "rag_query",
-      "arguments": {
-        "question": "what is taixing visa status in us?",
-        "collection_base": "taixing_knowledge",
-        "stream": false,
-        "k": 5,
-        "k_max": 50
-      }
-    }
-  }'
-```
-
-Optional: extract the embedded answer JSON with `jq` (requires the `data:` line from the SSE frame):
-
-```bash
-curl -sS ... | sed -n 's/^data: //p' | jq -r '.result.content[0].text' | jq .
-```
-
-### MCP `rag_query` — `"stream": true`
-
-Returns `{"events": [{"type": "meta", ...}, {"type": "answer_delta", ...}, ...]}` — same event names as HTTP SSE ([streaming.md](streaming.md)). Use `expand_on_not_found: false` for a shorter smoke run.
-
-```bash
-curl -sS -X POST "${MCP_URL}" \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json, text/event-stream" \
-  -H "mcp-session-id: ${MCP_SESSION}" \
-  -H "X-Request-Id: req-mcp-stream-1" \
-  -H "X-Session-Id: ses-mcp-stream-1" \
-  -H "X-Trace-Id: trc-mcp-stream-1" \
+  -H "X-Request-Id: req-abc123" \
+  -H "X-Session-Id: ses-xyz789" \
+  -H "X-Trace-Id: trace-001" \
   -H "X-User-Id: taixing" \
   -H "X-User-Roles: hr" \
   -H "X-User-Groups: engineering" \
   -H "X-User-Teams: rag-platform" \
   -d '{
     "jsonrpc": "2.0",
-    "id": 3,
+    "id": 1,
     "method": "tools/call",
     "params": {
       "name": "rag_query",
@@ -316,42 +154,17 @@ curl -sS -X POST "${MCP_URL}" \
         "collection_base": "taixing_knowledge",
         "stream": true,
         "k": 5,
-        "k_max": 50,
-        "expand_on_not_found": false
+        "k_max": 50
       }
     }
   }'
 ```
 
-Optional: list event types only:
-
-```bash
-curl -sS ... | sed -n 's/^data: //p' | jq -r '.result.content[0].text' | jq -r '.events[].type'
-```
-
-## RAG query — error cases
-
-```bash
-curl -sS -o /dev/stdout -w "\nHTTP %{http_code}\n" \
-  -X POST http://127.0.0.1:8000/v1/rag/query \
-  -H "Content-Type: application/json" \
-  -d '{"question":"q","collection_base":"taixing_knowledge","request_id":"x","session_id":"y"}'
-# -> HTTP 400 (request_id/session_id/trace_id must not appear in body)
-```
-
-```bash
-curl -sS -o /dev/stdout -w "\nHTTP %{http_code}\n" \
-  -X POST http://127.0.0.1:8000/v1/rag/query \
-  -H "Content-Type: application/json" \
-  -d '{"question":"q","collection_base":"taixing_knowledge","user_roles":["admin"]}'
-# -> HTTP 400 (user_id/user_roles/user_groups/user_teams must not appear in body)
-```
+Optional: `sed -n 's/^data: //p' | jq -r '.result.content[0].text' | jq .` (non-stream) or `| jq -r '.events[].type'` (stream).
 
 ## Embedding API (upstream)
 
-Same path/headers as [`app/http/embed.py`](../app/http/embed.py) (`POST /v1/embeddings`). `X-Trace-Id` is forwarded only when present.
-
-When the RAG HTTP path resolves a `conversation_id` (JSON body on `/v1/rag/query` or auto `conv_<hex>`), the same value is sent in the embeddings JSON body so gateways can correlate (optional field — omit for hand tests if your server ignores unknown keys).
+`POST /v1/embeddings` on `EMBEDDING_URL`. `X-Trace-Id` forwarded only when set.
 
 ```bash
 curl -sS -X POST "${EMBEDDING_URL}/v1/embeddings" \
@@ -359,12 +172,12 @@ curl -sS -X POST "${EMBEDDING_URL}/v1/embeddings" \
   -H "X-Session-Id: session_id_1" \
   -H "X-Trace-Id: trace-001" \
   -H "Content-Type: application/json" \
-  -d "{\"model\": \"${EMBEDDING_MODEL}\", \"conversation_id\": \"conv_embed_1\", \"input\": \"hello world\"}"
+  -d "{\"model\": \"${EMBEDDING_MODEL}\", \"input\": \"hello world\"}"
 ```
 
 ## Inference / chat (upstream)
 
-OpenAI-compatible `POST /v1/chat/completions` (used by [`app/rag/rag_answer.py`](../app/rag/rag_answer.py)). Same correlation headers as embedding (`X-Trace-Id` forwarded only when set).
+`POST /v1/chat/completions` on `INFERENCE_URL`.
 
 ```bash
 curl -sS -X POST "${INFERENCE_URL}/v1/chat/completions" \
@@ -375,45 +188,12 @@ curl -sS -X POST "${INFERENCE_URL}/v1/chat/completions" \
   -d "{\"model\": \"${INFERENCE_MODEL}\", \"messages\": [{\"role\": \"user\", \"content\": \"where is jersey city\"}], \"max_tokens\": 50}"
 ```
 
-OpenAPI / Swagger docs (HTTP status only; some servers do not expose `/docs`):
-
-```bash
-curl -sS -o /dev/null -w "%{http_code}\n" "${INFERENCE_URL}/docs"
-```
-
-## Rerank API (upstream)
-
-Used by [`app/http/rerank.py`](../app/http/rerank.py) when `use_reranker=true`. Path is `POST /v1/rerank` on `RERANK_URL`. Same correlation headers as embedding (`X-Trace-Id` forwarded only when set).
-
-On `/v1/rag/query`, the resolved `conversation_id` is also included in the rerank JSON body when non-empty (optional gateway field).
-
-```bash
-curl -sS -X POST "${RERANK_URL}/v1/rerank" \
-  -H "X-Request-Id: request_id_1" \
-  -H "X-Session-Id: session_id_1" \
-  -H "X-Trace-Id: trace-001" \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"model\": \"${RERANK_MODEL}\",
-    \"conversation_id\": \"conv_rerank_1\",
-    \"query\": \"what is taixing visa\",
-    \"documents\": [\"Taixing has an H1B visa.\", \"Jersey City is in NJ.\", \"The capital of France is Paris.\"],
-    \"top_n\": 3
-  }"
-```
-
 ## Qdrant (upstream)
-
-List collections (skip `api-key` header for local / no-auth):
 
 ```bash
 curl -sS "${QDRANT_URL}/collections" \
   -H "api-key: ${QDRANT_API_KEY}"
-```
 
-Inspect one collection (replace base + `ENV` to match `.env`, e.g. `taixing_knowledge_dev`):
-
-```bash
 curl -sS "${QDRANT_URL}/collections/taixing_knowledge_${ENV}" \
   -H "api-key: ${QDRANT_API_KEY}"
 ```
@@ -423,12 +203,12 @@ curl -sS "${QDRANT_URL}/collections/taixing_knowledge_${ENV}" \
 | Purpose | Method | URL |
 |---------|--------|-----|
 | Liveness | `GET` | `http://127.0.0.1:8000/health` |
-| Readiness (probes Qdrant) | `GET` | `http://127.0.0.1:8000/ready` |
-| RAG answer (JSON) | `POST` | `http://127.0.0.1:8000/v1/rag/query` |
-| RAG answer (SSE) | `POST` | `http://127.0.0.1:8000/v1/rag/query` (with `Accept: text/event-stream` or `"stream": true` in body) |
-| MCP `rag_query` (`stream: false`) | `POST` | `http://127.0.0.1:8000/v1/mcp` (`tools/call` → `rag_query`) |
-| MCP `rag_query` (`stream: true`) | `POST` | `http://127.0.0.1:8000/v1/mcp` (`tools/call` → `rag_query`) |
-| Embedding (upstream) | `POST` | `${EMBEDDING_URL}/v1/embeddings` |
-| Chat (upstream) | `POST` | `${INFERENCE_URL}/v1/chat/completions` |
-| Rerank (upstream) | `POST` | `${RERANK_URL}/v1/rerank` |
-| Qdrant collections | `GET` | `${QDRANT_URL}/collections` |
+| Readiness | `GET` | `http://127.0.0.1:8000/ready` |
+| Version | `GET` | `http://127.0.0.1:8000/version` |
+| Metrics | `GET` | `http://127.0.0.1:8000/metrics` |
+| RAG (JSON) | `POST` | `http://127.0.0.1:8000/v1/rag/query` |
+| RAG (SSE) | `POST` | `http://127.0.0.1:8000/v1/rag/query` + `Accept: text/event-stream` |
+| MCP `rag_query` | `POST` | `http://127.0.0.1:8000/v1/mcp` |
+| Embedding | `POST` | `${EMBEDDING_URL}/v1/embeddings` |
+| Chat | `POST` | `${INFERENCE_URL}/v1/chat/completions` |
+| Qdrant | `GET` | `${QDRANT_URL}/collections` |

@@ -96,6 +96,15 @@ def _build_numbered_context(
     return "\n\n".join(parts), citations
 
 
+def _chunks_for_follow_up_generation(chunks_in_context: list[dict]) -> list[dict]:
+    """Chunks in the final RAG context slice (all retrieval hits shown to the answer model).
+
+    Follow-ups are grounded in every passage in that slice (``source`` + text in the
+    generator prompt), not only passages the answer cited with ``[n]``.
+    """
+    return list(chunks_in_context)
+
+
 def _citations_used_in_answer(answer: str, citations: list[dict]) -> list[dict]:
     """
     Keep only passages the model cited via [n] in the answer (n must exist in ``citations``).
@@ -588,15 +597,11 @@ async def complete_rag_answer(
         follow_up_rerank_ms = 0
         follow_up_usage: UsageTokens | None = None
         if include_follow_up_questions:
-            cited_ids = {c.get("chunk_id") for c in citations_out if c.get("chunk_id")}
-            chunks_for_generator = [
-                c for c in chunks_for_followups if c.get("chunk_id") in cited_ids
-            ] or chunks_for_followups[:1]
             follow_ups, follow_up_chat_ms, follow_up_rerank_ms, follow_up_usage = (
                 await generate_follow_ups(
                     question=question,
                     answer=answer_out,
-                    chunks_used=chunks_for_generator,
+                    chunks_used=_chunks_for_follow_up_generation(chunks_for_followups),
                     follow_up_candidates=prep.follow_up_candidates,
                     follow_up_final=prep.follow_up_final,
                     infer_base=prep.infer_base,
@@ -816,15 +821,11 @@ async def complete_rag_answer_stream(
         follow_up_rerank_ms = 0
         follow_up_usage: UsageTokens | None = None
         if include_follow_up_questions:
-            cited_ids = {c.get("chunk_id") for c in citations_out if c.get("chunk_id")}
-            chunks_for_generator = [
-                c for c in chunks_for_followups if c.get("chunk_id") in cited_ids
-            ] or chunks_for_followups[:1]
             follow_ups, follow_up_chat_ms, follow_up_rerank_ms, follow_up_usage = (
                 await generate_follow_ups(
                     question=question,
                     answer=answer_out,
-                    chunks_used=chunks_for_generator,
+                    chunks_used=_chunks_for_follow_up_generation(chunks_for_followups),
                     follow_up_candidates=prep.follow_up_candidates,
                     follow_up_final=prep.follow_up_final,
                     infer_base=prep.infer_base,
