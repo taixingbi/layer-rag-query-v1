@@ -19,15 +19,13 @@ All values are non-negative integers (wall time from `time.perf_counter()`).
 
 | Key | Meaning |
 |-----|---------|
-| `total` | End-to-end time for `complete_rag_answer` (embed through follow-ups). |
-| `embed` | Query embedding HTTP call. |
-| `retrieve` | Hybrid `query_chunks` (dense + fusion). |
-| `chunk_rerank` | Passage reranker; `0` if disabled or on rerank failure. |
+| `total` | End-to-end wall time for `complete_rag_answer`. |
+| `github_readme` | Query embedding HTTP call. |
+| `github_search` | Hybrid `query_chunks` + passage rerank (combined). |
 | `chat` | Sum of all main RAG `chat_complete` calls (including widen retries). |
-| `follow_up_chat` | Follow-up candidate generation chat; `0` if follow-ups disabled or failed before rerank. |
-| `follow_up_rerank` | Reranker over candidate question strings; `0` if skipped or no candidates. |
+| `follow_up_chat` | Follow-up candidate generation + rerank (combined); `0` if follow-ups disabled. |
 
-The final `complete_rag_answer done` log line repeats these as top-level JSON fields (`duration_ms` / `latency_*_ms`) for structured log pipelines.
+The final `complete_rag_answer done` log line still emits internal fields (`latency_embed_ms`, `latency_retrieve_ms`, …) for structured log pipelines.
 
 ## Pipeline
 

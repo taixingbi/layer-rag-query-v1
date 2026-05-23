@@ -141,13 +141,11 @@ Default mode. Correlation ids appear in the **body** and are echoed as response 
     "What are the requirements for maintaining H4 EAD status?"
   ],
   "latency_ms": {
-    "total": 2794,
-    "embed": 178,
-    "retrieve": 55,
-    "chunk_rerank": 228,
+    "github_readme": 178,
+    "github_search": 283,
     "chat": 606,
-    "follow_up_chat": 1684,
-    "follow_up_rerank": 42
+    "follow_up_chat": 1726,
+    "total": 2794
   },
   "usage": {
     "total": { "prompt_tokens": 4200, "completion_tokens": 380, "total_tokens": 4580 },
@@ -176,13 +174,11 @@ Default mode. Correlation ids appear in the **body** and are echoed as response 
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `total` | integer | Wall time for the full handler. |
-| `embed` | integer | Query embedding. |
-| `retrieve` | integer | Hybrid Qdrant search. |
-| `chunk_rerank` | integer | Cross-encoder rerank over retrieved pool. |
+| `github_readme` | integer | Query embedding (`POST /v1/embeddings`). |
+| `github_search` | integer | Hybrid Qdrant retrieve + cross-encoder chunk rerank. |
 | `chat` | integer | Main answer generation (cumulative across widen retries). |
-| `follow_up_chat` | integer | Follow-up LLM call. |
-| `follow_up_rerank` | integer | Follow-up candidate rerank. |
+| `follow_up_chat` | integer | Follow-up LLM call + follow-up candidate rerank. |
+| `total` | integer | Wall time for the full handler. |
 
 #### Usage
 
@@ -268,7 +264,7 @@ data: <one-line JSON>
 | Event | `data` shape | Notes |
 |-------|--------------|-------|
 | `meta` | `request_id`, `session_id`, `trace_id`, `user_id`, `conversation_id`, `collection`, `k`, `k_max` | First frame. `trace_id` may be `null`. |
-| `latency` | `phase`, `ms` | `phase` ∈ `embed`, `retrieve`, `chunk_rerank`, `chat`, `follow_up_chat`, `follow_up_rerank`, `total`. |
+| `latency` | `phase`, `ms` | `phase` ∈ `github_readme`, `github_search`, `chat`, `follow_up_chat`, `total`. |
 | `retrieval_widen` | `reason`, `prev_k`, `next_k` | Before a context widen retry (`reason` is `"not_found"`). |
 | `answer_start` | `{}` | |
 | `answer_delta` | `text` | Final answer only, ~48 UTF-8 chars per frame. |

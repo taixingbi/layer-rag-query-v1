@@ -47,7 +47,7 @@ The HTTP status is locked at **200** as soon as headers flush. Errors that occur
 | Event | Payload | When |
 |-------|---------|------|
 | `meta` | `{"request_id","session_id","trace_id","user_id","conversation_id","collection","k","k_max"}` | First frame, before any work. `user_id` mirrors the `X-User-Id` header (default `"-"`). `trace_id` is JSON `null` when `X-Trace-Id` was omitted. |
-| `latency` | `{"phase","ms"}` | Once per phase: `embed`, `retrieve`, `chunk_rerank`, `chat`, `follow_up_chat`, `follow_up_rerank`, `total`. |
+| `latency` | `{"phase","ms"}` | Once per phase: `github_readme`, `github_search`, `chat`, `follow_up_chat`, `total`. |
 | `retrieval_widen` | `{"reason","prev_k","next_k"}` | Emitted **before** a retry when the model returned empty or exactly `NOT_FOUND` and we widen the context slice (`expand_on_not_found`). `reason` is currently always `"not_found"`. Not sent when the first chat attempt already succeeds. |
 | `answer_start` | `{}` | Immediately before the first user-visible `answer_delta` for this turn. After any `retrieval_widen` events; clients can reset their answer buffer here. |
 | `answer_delta` | `{"text":"<chunk>"}` | Final-answer text from upstream streaming chat (token/text deltas). Intermediate NOT_FOUND / widen attempts are **not** streamed. |
@@ -63,9 +63,8 @@ The HTTP status is locked at **200** as soon as headers flush. Errors that occur
 
 ```
 meta
-latency(phase=embed)
-latency(phase=retrieve)
-latency(phase=chunk_rerank)
+latency(phase=github_readme)
+latency(phase=github_search)
 answer_start
 answer_delta × N
 answer_end
@@ -73,7 +72,6 @@ latency(phase=chat)
 citations
 follow_up_questions
 latency(phase=follow_up_chat)
-latency(phase=follow_up_rerank)
 usage
 [retrieval_hits]
 latency(phase=total)
@@ -86,7 +84,7 @@ Intermediate chat completions are **buffered** (no `answer_delta`). Each widen e
 
 ```
 meta
-latency(embed) latency(retrieve) latency(chunk_rerank)
+latency(github_readme) latency(github_search)
 retrieval_widen × W          ← W = number of widen steps before success (or give up)
 answer_start
 answer_delta × N             ← final answer only
@@ -102,7 +100,7 @@ done
 
 Latency events for `chat` carry the **cumulative** wall time across all attempts, matching the non-stream `latency_ms.chat` field.
 
-`latency(phase=total)` is **wall-clock** time from the start of the stream handler (right after `meta`) through follow-ups. Phase lines (`embed`, `retrieve`, `chunk_rerank`, `chat`, `follow_up_chat`, `follow_up_rerank`) are measured sequentially along the pipeline; `chat` is the sum of every upstream completion in the widen loop plus the final one. Example: `total` ≈ 3.3s with `chat` ≈ 0.9s and `follow_up_chat` ≈ 2.0s is normal when follow-up generation dominates after the main answer.
+`latency(phase=total)` is **wall-clock** time from the start of the stream handler (right after `meta`) through follow-ups. `github_readme` is embedding; `github_search` is retrieve + chunk rerank combined; `follow_up_chat` is follow-up LLM + rerank combined. `chat` is the sum of every upstream completion in the widen loop plus the final one. Example: `total` ≈ 3.3s with `chat` ≈ 0.9s and `follow_up_chat` ≈ 2.0s is normal when follow-up generation dominates after the main answer.
 
 ## Error semantics
 

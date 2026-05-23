@@ -48,6 +48,14 @@ from app.http.inference import (
     chat_complete_stream,
     resolve_conversation_id,
 )
+from app.rag.latency import (
+    LATENCY_CHAT,
+    LATENCY_FOLLOW_UP_CHAT,
+    LATENCY_GITHUB_README,
+    LATENCY_GITHUB_SEARCH,
+    LATENCY_TOTAL,
+    build_latency_ms,
+)
 from app.http.usage import UsageTokens, build_usage_payload, merge_usage
 from app.http.rerank import rerank_texts
 from app.core.logging_config import logger
@@ -487,9 +495,9 @@ async def complete_rag_answer(
     Returns ``(answer, citations, follow_up_questions, latency_ms, retrieval_hits, usage)`` where ``citations`` lists only passages the model
     referenced with ``[n]`` in ``answer`` (each item: ``cite_id``, ``chunk_id``, ``source``, ``text``).
     ``follow_up_questions`` is empty when disabled or on failure; otherwise up to ``follow_up_final`` strings.
-    ``latency_ms`` maps phase names to integer milliseconds (``total``, ``embed``, ``retrieve``, ``chunk_rerank``,
-    ``chat``, ``follow_up_chat``, ``follow_up_rerank``); unused phases are ``0``.
-    ``usage`` mirrors ``latency_ms`` chat phases with ``prompt_tokens``, ``completion_tokens``, ``total_tokens``.
+    ``latency_ms`` uses stable phase keys (``github_readme``, ``github_search``, ``chat``,
+    ``follow_up_chat``, ``total``; see :mod:`app.rag.latency`).
+    ``usage`` holds ``chat``, ``follow_up_chat``, and ``total`` token counts.
     ``retrieval_hits`` is empty unless ``include_retrieval_hits`` is true; then each item has
     ``stage`` (``retrieve`` or ``rerank``), ``rank``, ``chunk_id``, ``source``, ``score`` (RRF vs rerank scale; not comparable across stages).
 
@@ -622,15 +630,15 @@ async def complete_rag_answer(
             )
         usage = build_usage_payload(chat_usage, follow_up_usage)
         total_ms = _elapsed_ms(wall_t0)
-        latency_ms: dict[str, int] = {
-            "total": total_ms,
-            "embed": prep.embed_ms,
-            "retrieve": prep.retrieve_ms,
-            "chunk_rerank": prep.chunk_rerank_ms,
-            "chat": chat_ms_total,
-            "follow_up_chat": follow_up_chat_ms,
-            "follow_up_rerank": follow_up_rerank_ms,
-        }
+        latency_ms = build_latency_ms(
+            embed_ms=prep.embed_ms,
+            retrieve_ms=prep.retrieve_ms,
+            chunk_rerank_ms=prep.chunk_rerank_ms,
+            chat_ms=chat_ms_total,
+            follow_up_chat_ms=follow_up_chat_ms,
+            follow_up_rerank_ms=follow_up_rerank_ms,
+            total_ms=total_ms,
+        )
         logger.info(
             "complete_rag_answer done k_used=%s follow_up_questions=%s latency_total_ms=%s",
             current_k,
@@ -679,11 +687,10 @@ async def complete_rag_answer_stream(
     """Streaming sibling of :func:`complete_rag_answer`. Yields event dicts (each carries
     a ``type`` key naming the SSE event) in this order on a happy path:
 
-      ``meta`` → ``latency(embed)`` → ``latency(retrieve)`` → ``latency(chunk_rerank)`` →
+      ``meta`` → ``latency(github_readme)`` → ``latency(github_search)`` →
       zero or more ``retrieval_widen`` → ``answer_start`` → many ``answer_delta`` →
       ``answer_end`` → ``latency(chat)`` → ``citations`` →
-      ``follow_up_questions`` → ``latency(follow_up_chat)`` → ``latency(follow_up_rerank)`` →
-      ``latency(total)`` → ``done``
+      ``follow_up_questions`` → ``latency(follow_up_chat)`` → ``latency(total)`` → ``done``
 
     Widen attempts (NOT_FOUND / empty with ``expand_on_not_found``) run chat upstream
     but **do not** emit ``answer_delta``; each widen emits ``retrieval_widen`` only, then
@@ -735,9 +742,16 @@ async def complete_rag_answer_stream(
             "k": k,
             "k_max": k_max,
         }
-        yield {"type": "latency", "phase": "embed", "ms": prep.embed_ms}
-        yield {"type": "latency", "phase": "retrieve", "ms": prep.retrieve_ms}
-        yield {"type": "latency", "phase": "chunk_rerank", "ms": prep.chunk_rerank_ms}
+        yield {
+            "type": "latency",
+            "phase": LATENCY_GITHUB_README,
+            "ms": prep.embed_ms,
+        }
+        yield {
+            "type": "latency",
+            "phase": LATENCY_GITHUB_SEARCH,
+            "ms": prep.retrieve_ms + prep.chunk_rerank_ms,
+        }
 
         current_k = prep.initial_k
         last_answer = ""
@@ -819,7 +833,7 @@ async def complete_rag_answer_stream(
             current_k = next_k
 
         yield {"type": "answer_end"}
-        yield {"type": "latency", "phase": "chat", "ms": chat_ms_total}
+        yield {"type": "latency", "phase": LATENCY_CHAT, "ms": chat_ms_total}
 
         answer_out, citations_out = _with_citations(last_answer, last_citations)
         yield {"type": "citations", "items": citations_out}
@@ -853,8 +867,11 @@ async def complete_rag_answer_stream(
                 extra={"follow_up_empty_reason": "follow_ups_disabled_by_request"},
             )
         yield {"type": "follow_up_questions", "items": follow_ups}
-        yield {"type": "latency", "phase": "follow_up_chat", "ms": follow_up_chat_ms}
-        yield {"type": "latency", "phase": "follow_up_rerank", "ms": follow_up_rerank_ms}
+        yield {
+            "type": "latency",
+            "phase": LATENCY_FOLLOW_UP_CHAT,
+            "ms": follow_up_chat_ms + follow_up_rerank_ms,
+        }
         usage = build_usage_payload(chat_usage, follow_up_usage)
         yield {"type": "usage", **usage}
 
@@ -882,7 +899,7 @@ async def complete_rag_answer_stream(
                 "latency_follow_up_rerank_ms": follow_up_rerank_ms,
             },
         )
-        yield {"type": "latency", "phase": "total", "ms": total_ms}
+        yield {"type": "latency", "phase": LATENCY_TOTAL, "ms": total_ms}
         yield {"type": "done"}
 
 
