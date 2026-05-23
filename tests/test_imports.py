@@ -18,6 +18,7 @@ def test_import_mcp_entry() -> None:
     assert mcp.name == "layer-rag-query"
     assert MCP_HTTP_PATH == "/v1/mcp"
     assert fastmcp.settings.streamable_http_path == "/v1/mcp"
+    assert fastmcp.settings.stateless_http is True
 
 
 def test_mcp_rag_tool_names() -> None:

@@ -130,6 +130,8 @@ curl -sS -o /dev/stdout -w "\nHTTP %{http_code}\n" \
 
 Prefer **`POST /v1/rag/query`** for plain JSON. MCP uses the same RAG logic via `tools/call` → `rag_query` with `"stream": true` or `false` in `arguments` (same meaning as the HTTP body flag).
 
+**Stateless HTTP:** no `initialize` handshake and no `mcp-session-id` header — one `tools/call` per request (same correlation headers as `/v1/rag/query`).
+
 MCP responses are **SSE frames** (`event: message` + `data: {...}`). Parse `result.content[0].text` (JSON string when not streaming events; `{"events": [...]}` when streaming).
 
 ```bash

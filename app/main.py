@@ -191,6 +191,8 @@ async def answer_from_inference_payload_async(
 
 
 fastmcp.settings.streamable_http_path = MCP_HTTP_PATH
+# Stateless: each POST /v1/mcp is self-contained (no initialize / mcp-session-id).
+fastmcp.settings.stateless_http = True
 
 mcp = FastMCP(
     "layer-rag-query",
@@ -752,4 +754,4 @@ async def ready(request: Request) -> JSONResponse:
 
 
 if __name__ == "__main__":
-    mcp.run(path=MCP_HTTP_PATH)
+    mcp.run(path=MCP_HTTP_PATH, stateless_http=True)
