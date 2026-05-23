@@ -1,5 +1,5 @@
 # RAG MCP + HTTP API (FastMCP). `env_file` injects variables; no `.env` file is required inside the image
-# (see `app.config` when the file is absent). Qdrant / embed / rerank / inference URLs must be reachable
+# (see `app.core.config` when the file is absent). Qdrant / embed / rerank / inference URLs must be reachable
 # from the container (LAN IP, cluster DNS, or host.docker.internal).
 services:
   rag-query:

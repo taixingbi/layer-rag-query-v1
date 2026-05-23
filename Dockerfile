@@ -1,10 +1,13 @@
 # layer-rag-query: FastMCP HTTP (default port 8000). In k3s, map Service NodePort (e.g. 30183) → targetPort 8000.
 FROM python:3.12-slim
 
+ARG APP_VERSION=dev
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    APP_VERSION=${APP_VERSION} \
     HTTP_PORT=8000
 
 WORKDIR /app

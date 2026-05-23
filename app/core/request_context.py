@@ -57,7 +57,7 @@ def bind_request_context(
 ):
     """Bind trace + identity ids for the current call (embedding / retrieval / RAG).
 
-    ``user_id`` is the caller identity from ``X-User-Id`` (see ``app/access.py``);
+    ``user_id`` is the caller identity from ``X-User-Id`` (see ``app.rag.access``);
     use ``"-"`` or ``None`` for anonymous. The full role / group / team lists are
     propagated as call kwargs (``user=``), not contextvars — only the id is
     needed by the logger to stamp every line.

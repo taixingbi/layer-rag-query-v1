@@ -12,7 +12,7 @@ Streaming is opt-in. Trigger it by **either** of:
 
 If both are present they're OR-ed (any single trigger wins). Anything else falls back to JSON. Query-param triggers (`?stream=1`) are intentionally not supported — keep streaming opt-in via header or body so URLs stay clean.
 
-The MCP tool `answer_from_inference`, the `python -m app.rag_answer` CLI, and any caller that doesn't ask for streaming are **unchanged** — they still call the non-stream `complete_rag_answer` and get a single JSON object.
+The MCP tool `rag_query` (and alias `answer_from_inference`), the `python -m app.rag` CLI, and any caller that doesn't ask for streaming still call the non-stream `complete_rag_answer` and get a single JSON object. For MCP clients that want the same event sequence as HTTP SSE without holding an HTTP connection open, use **`rag_query_stream`**, which runs `complete_rag_answer_stream` and returns `{"events": [{"type": "meta", ...}, {"type": "answer_delta", ...}, ...]}`.
 
 ## Wire format
 

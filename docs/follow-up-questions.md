@@ -1,6 +1,6 @@
 # Follow-up questions (RAG response)
 
-After the main RAG answer and citations are produced, the pipeline can attach **`follow_up_questions`**: short suggested questions for the user to ask next. Implementation lives in [`app/follow_up.py`](../app/follow_up.py) (entry point: `generate_follow_ups`), invoked from [`app/rag_answer.py`](../app/rag_answer.py); HTTP/MCP wiring is in [`app/main.py`](../app/main.py).
+After the main RAG answer and citations are produced, the pipeline can attach **`follow_up_questions`**: short suggested questions for the user to ask next. Implementation lives in [`app/rag/follow_up.py`](../app/rag/follow_up.py) (entry point: `generate_follow_ups`), invoked from [`app/rag/rag_answer.py`](../app/rag/rag_answer.py); HTTP/MCP wiring is in [`app/main.py`](../app/main.py).
 
 ## Response shape
 
@@ -64,7 +64,7 @@ Empty / failure paths emit `follow_up_questions_empty` instead (see "Fallbacks")
 
 Validation errors (e.g. `follow_up_final > follow_up_candidates`) return **422** on HTTP with Pydantic detail.
 
-## CLI (`python -m app.rag_answer`)
+## CLI (`python -m app.rag`)
 
 - `--no-follow-ups` — same as disabling follow-ups.
 - `--follow-up-candidates N` — must satisfy `complete_rag_answer` validation (3–12).

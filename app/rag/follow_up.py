@@ -1,6 +1,6 @@
 """Follow-up question generation: extra LLM call + reranker over candidate strings.
 
-Public surface: ``generate_follow_ups`` — invoked by ``app.rag_answer.complete_rag_answer``
+Public surface: ``generate_follow_ups`` — invoked by ``app.rag.rag_answer.complete_rag_answer``
 after the main RAG answer is produced. All failures are logged and degrade to ``[]`` so
 the primary RAG response shape stays stable.
 """
@@ -13,7 +13,7 @@ import time
 from app.http.inference import chat_complete
 from app.http.usage import UsageTokens
 from app.http.rerank import rerank_texts
-from app.logging_config import logger
+from app.core.logging_config import logger
 
 _FOLLOW_UP_GEN_MAX_TOKENS_CAP = 512
 

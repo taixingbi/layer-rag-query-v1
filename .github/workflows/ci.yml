@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      QDRANT_URL: http://127.0.0.1:6333
+      QDRANT_API_KEY: ""
+      EMBEDDING_URL: http://127.0.0.1:30181
+      EMBEDDING_MODEL: BAAI/bge-m3
+      VECTOR_SIZE: "1024"
+      ENV: dev
+      TOP_K_DENSE: "20"
+      RRF_K: "60"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[mcp,dev]"
+
+      - name: Run tests
+        run: pytest

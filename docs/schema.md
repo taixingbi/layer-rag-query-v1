@@ -10,9 +10,11 @@ Contract reference for **layer-rag-query** HTTP routes. Implementation: [`app/ma
 |--------|------|----------|---------|
 | `POST` | `/v1/rag/query` | `application/json` (default) or `text/event-stream` | Full RAG answer |
 | `GET` | `/health` | JSON | Liveness |
+| `GET` | `/version` | JSON | Build identity |
 | `GET` | `/ready` | JSON | Readiness (Qdrant reachable) |
+| `GET` | `/metrics` | Prometheus text | HTTP + RAG metrics |
 
-MCP tools (`retrieve_chunks`, `embed_text`, `answer_from_inference`) use the same RAG logic but different wire shapes; this document covers **HTTP only**.
+MCP tools (`retrieve_chunks`, `embed_text`, `rag_query`, `rag_query_stream`, `answer_from_inference`) use the same RAG logic but different wire shapes; this document covers **HTTP only**. Non-stream MCP returns the JSON body described below; stream MCP returns `{"events": [<SSE-shaped objects>]}` (see [streaming.md](streaming.md)).
 
 ---
 
@@ -294,7 +296,26 @@ Pre-stream validation errors (`400` / `422`) return JSON, not SSE.
 **200**
 
 ```json
-{ "status": "ok" }
+{
+  "status": "ok",
+  "app_name": "layer-rag-query",
+  "app_version": "1.0.0"
+}
+```
+
+`app_version` is `APP_VERSION` from the container environment when set, else the installed package version from [`pyproject.toml`](../pyproject.toml).
+
+---
+
+## `GET /version`
+
+**200**
+
+```json
+{
+  "app_name": "layer-rag-query",
+  "app_version": "1.0.0"
+}
 ```
 
 ---
@@ -303,8 +324,24 @@ Pre-stream validation errors (`400` / `422`) return JSON, not SSE.
 
 | Status | Body |
 |--------|------|
-| `200` | `{"status": "ready"}` |
-| `503` | `{"status": "not_ready", "detail": "<ExceptionType>"}` |
+| `200` | `{"status": "ready", "app_name": "layer-rag-query", "app_version": "..."}` |
+| `503` | `{"status": "not_ready", "detail": "<ExceptionType>", "app_name": "...", "app_version": "..."}` |
+
+---
+
+## `GET /metrics`
+
+**200** — `Content-Type: text/plain; version=0.0.4; charset=utf-8` (Prometheus exposition format).
+
+Notable series (prefix `rag_query_`):
+
+| Metric | Labels | Meaning |
+|--------|--------|---------|
+| `http_requests_total` | `method`, `path`, `status` | All HTTP routes including probes |
+| `http_request_duration_seconds` | `method`, `path` | HTTP latency histogram |
+| `requests_total` | `status`, `stream` | Completed `/v1/rag/query` invocations |
+| `duration_seconds` | `stream` | RAG wall time (`latency_ms.total`) |
+| `phase_duration_seconds` | `phase` | Per-phase timings (`embed`, `retrieve`, `chat`, …) |
 
 ---
 

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import httpx
 
-from app.config import get_embedding_model, get_embedding_url, VECTOR_SIZE
+from app.core.config import get_embedding_model, get_embedding_url, VECTOR_SIZE
 from app.http._correlation import correlation_headers
-from app.logging_config import logger
-from app.request_context import bind_request_context
+from app.core.logging_config import logger
+from app.core.request_context import bind_request_context
 
 
 def _embed_headers(

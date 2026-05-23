@@ -33,7 +33,7 @@ Importing `app` raises `ValueError` if any required variable below is missing fr
 | `TOP_K_DENSE` | Dense recall count before RRF |
 | `RRF_K` | RRF constant `k` |
 
-Required keys match `REQUIRED_ENV_VARS` in `app/config.py` and `.env.example`.
+Required keys match `REQUIRED_ENV_VARS` in `app/core/config.py` and `.env.example`.
 
 Set `ENV` in `.env` to `dev`, `qa`, or `prod` (or export it). The second argument to `query_chunks` is the collection **base** name; Qdrant resolves `taixing_knowledge_dev` when base is `taixing_knowledge` and `ENV=dev`. There is no runtime `configure()` — change `.env` or shell exports and restart the process.
 
@@ -126,7 +126,7 @@ asyncio.run(main())
 
 ## MCP (FastMCP)
 
-Optional [FastMCP](https://gofastmcp.com) server over **stdio** (e.g. Cursor): tools `retrieve_chunks`, `embed_text`, and `answer_from_inference` (RAG + `INFERENCE_URL` chat completion).
+Optional [FastMCP](https://gofastmcp.com) server over **stdio** (e.g. Cursor): tools `retrieve_chunks`, `embed_text`, `rag_query` (non-stream JSON, same shape as `POST /v1/rag/query`), `rag_query_stream` (collects SSE-shaped events into `{"events": [...]}`), and `answer_from_inference` (alias of `rag_query`).
 
 ```bash
 uv pip install -e ".[mcp]"
@@ -138,12 +138,16 @@ fastmcp run app/main.py:mcp --transport http --host 0.0.0.0 --port 8000
 
 On **HTTP** transport, **MCP** clients use `http://127.0.0.1:8000/mcp` . The same process also serves **`POST http://127.0.0.1:8000/v1/rag/query`** (JSON body; default response includes `answer`, `citations`, `follow_up_questions`, `latency_ms`, `usage`, and correlation fields `request_id`, `session_id`, `trace_id`, `conversation_id`) for plain `curl` scripts, plus liveness/readiness probes:
 
-- `GET /health` — always `200 {"status":"ok"}` while the process is up (no I/O, no headers required).
-- `GET /ready` — `200 {"status":"ready"}` when Qdrant responds to `get_collections`; `503 {"status":"not_ready","detail":"<error type>"}` otherwise.
+- `GET /health` — always `200` with `status`, `app_name`, `app_version` while the process is up (no I/O, no headers required).
+- `GET /version` — `200` with `app_name` and `app_version` (image `APP_VERSION` or package metadata).
+- `GET /ready` — `200` when Qdrant responds to `get_collections`; `503` otherwise (includes version fields).
+- `GET /metrics` — Prometheus scrape endpoint (HTTP and RAG phase histograms/counters).
 
 ```bash
 curl -sS http://127.0.0.1:8000/health
+curl -sS http://127.0.0.1:8000/version
 curl -sS http://127.0.0.1:8000/ready
+curl -sS http://127.0.0.1:8000/metrics | head
 ```
 
 Correlation on `/v1/rag/query` is **header-only** (never put `request_id`, `session_id`, or `trace_id` in the JSON body — **400**). `X-Request-Id` and `X-Session-Id` are optional: if either header is missing or blank, the server generates a UUID for that call. `X-Trace-Id` is optional and is not auto-generated. On **200** responses, `X-Request-Id`, `X-Session-Id`, and `X-Trace-Id` (when sent) are echoed in response headers so clients can confirm or read server-generated IDs (`curl -D -`).
@@ -218,18 +222,18 @@ CLI: `fastmcp run app/main.py:mcp --transport http --host 0.0.0.0 --port 8000`
 
 ## RAG + inference (chat API)
 
-End-to-end: **hybrid retrieval** (`query_chunks` in `app/retrieval.py`; Qdrant client setup in `app/qdrant/client.py`) → optional **rerank** (`POST /v1/rerank`) → **prompt** → OpenAI-compatible **`POST /v1/chat/completions`** (e.g. Qwen on port 30180).
+End-to-end: **hybrid retrieval** (`query_chunks` in `app/rag/retrieval.py`; Qdrant client setup in `app/qdrant/client.py`) → optional **rerank** (`POST /v1/rerank`) → **prompt** → OpenAI-compatible **`POST /v1/chat/completions`** (e.g. Qwen on port 30180).
 
 ```bash
 # Or set INFERENCE_URL / INFERENCE_MODEL in `.env` (see `.env.example`)
-python -m app.rag_answer "where is jersey city" -c taixing_knowledge -k 5
+python -m app.rag "where is jersey city" -c taixing_knowledge -k 5
 ```
 
 Useful flags: `--single-pass` (one chat, no context widen on `NOT_FOUND`), `--no-reranker`, `--no-follow-ups`, `--retrieval-hits` (print `retrieval_hits` in the JSON, same shape as HTTP when the debug flags are on), `--follow-up-candidates` / `--follow-up-final`.
 
-Same flow as: retrieve grounded passages, join them as context, then call your stack’s chat endpoint with `messages` (see `app/rag_answer.py`). Inspect the OpenAPI UI at `http://<host>:30180/docs` for extra fields (temperature, etc.) if you extend the script.
+Same flow as: retrieve grounded passages, join them as context, then call your stack’s chat endpoint with `messages` (see `app/rag/rag_answer.py`). Inspect the OpenAPI UI at `http://<host>:30180/docs` for extra fields (temperature, etc.) if you extend the script.
 
-The MCP tool `answer_from_inference` accepts the same optional booleans as the HTTP body for retrieval hits (`include_retrieval_hits`, `debug`, `trace_retrieval`, `return_retrieval_hits`).
+MCP tools `rag_query`, `rag_query_stream`, and `answer_from_inference` accept the same optional booleans as the HTTP body for retrieval hits (`include_retrieval_hits`, `debug`, `trace_retrieval`, `return_retrieval_hits`). Optional `trace_id` is supported on MCP RAG tools (HTTP uses `X-Trace-Id`).
 
 ## Evaluation
 

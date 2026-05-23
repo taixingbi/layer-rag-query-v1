@@ -5,7 +5,7 @@ from __future__ import annotations
 import httpx
 
 from app.http._correlation import correlation_headers
-from app.logging_config import logger
+from app.core.logging_config import logger
 
 
 async def rerank_texts(

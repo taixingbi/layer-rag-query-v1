@@ -12,21 +12,33 @@ set -a && source .env && set +a
 
 When the FastMCP HTTP server is running locally, the base URL is `http://127.0.0.1:8000` (start it with `fastmcp run app/main.py:mcp --transport http --host 0.0.0.0 --port 8000`).
 
-## Liveness / readiness
+## Liveness / readiness / version / metrics
 
-No `request_id` / `session_id` required for either probe.
+No `request_id` / `session_id` required for these probes.
 
 ```bash
 curl -sS http://127.0.0.1:8000/health
 ```
 
-Expected: `200 {"status":"ok"}`.
+Expected: `200` with `status`, `app_name`, and `app_version` (from `APP_VERSION` in the image or package metadata).
+
+```bash
+curl -sS http://127.0.0.1:8000/version
+```
+
+Expected: `200 {"app_name":"layer-rag-query","app_version":"..."}`.
 
 ```bash
 curl -sS -o /dev/stdout -w "\nHTTP %{http_code}\n" http://127.0.0.1:8000/ready
 ```
 
-Expected when Qdrant is reachable: `200 {"status":"ready"}`. When Qdrant is unreachable / mis-configured: `503 {"status":"not_ready","detail":"<ExceptionType>"}`.
+Expected when Qdrant is reachable: `200` with `status`, `app_name`, `app_version`. When Qdrant is unreachable / mis-configured: `503` with `status`, `detail`, `app_name`, `app_version`.
+
+```bash
+curl -sS http://127.0.0.1:8000/metrics | head
+```
+
+Expected: Prometheus text exposition (`rag_query_http_requests_total`, `rag_query_duration_seconds`, etc.).
 
 ## Correlation headers
 
@@ -217,7 +229,7 @@ curl -sS -X POST "${EMBEDDING_URL}/v1/embeddings" \
 
 ## Inference / chat (upstream)
 
-OpenAI-compatible `POST /v1/chat/completions` (used by [`app/rag_answer.py`](../app/rag_answer.py)). Same correlation headers as embedding (`X-Trace-Id` forwarded only when set).
+OpenAI-compatible `POST /v1/chat/completions` (used by [`app/rag/rag_answer.py`](../app/rag/rag_answer.py)). Same correlation headers as embedding (`X-Trace-Id` forwarded only when set).
 
 ```bash
 curl -sS -X POST "${INFERENCE_URL}/v1/chat/completions" \

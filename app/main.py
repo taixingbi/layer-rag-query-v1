@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from typing import Any
 
@@ -16,18 +17,26 @@ import httpx
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field, ValidationError, model_validator
 from starlette.requests import Request
-from starlette.responses import JSONResponse, StreamingResponse
+from starlette.responses import JSONResponse, Response, StreamingResponse
 
-from app.access import RagUser
-from app.asyncio_util import run_async
+from app.rag.access import RagUser
+from app.core.asyncio_util import run_async
+from app.core.metrics import (
+    metrics_content_type,
+    metrics_payload,
+    observe_http,
+    observe_rag_query,
+)
+from app.core.version import APP_NAME, get_app_version
 from app.http.embed import embed_text as _embed_text_async
 from app.http.inference import resolve_conversation_id
 from app.http.usage import UsageTokens
-from app.logging_config import logger
+from app.core.logging_config import logger
 from app.qdrant.client import create_async_client, resolve_connection_params
-from app.rag_answer import complete_rag_answer, complete_rag_answer_stream
-from app.request_context import bind_http_context
-from app.retrieval import query_chunks as _query_chunks_async
+from app.rag.mcp_tools import rag_query_non_stream, rag_query_stream_events
+from app.rag.rag_answer import complete_rag_answer_stream
+from app.core.request_context import bind_http_context
+from app.rag.retrieval import query_chunks as _query_chunks_async
 
 _FORBIDDEN_RAG_BODY_KEYS = frozenset({
     "request_id",
@@ -38,6 +47,15 @@ _FORBIDDEN_RAG_BODY_KEYS = frozenset({
     "user_groups",
     "user_teams",
 })
+
+
+def _observe_http_request(request: Request, response: Response, started: float) -> None:
+    observe_http(
+        request.method,
+        request.url.path,
+        int(response.status_code),
+        time.perf_counter() - started,
+    )
 
 
 def _correlation_from_headers(request: Request) -> tuple[str, str, str | None]:
@@ -144,14 +162,12 @@ async def answer_from_inference_payload_async(
     conversation_id: str,
 ) -> dict[str, Any]:
     """Run RAG + chat (async). Raise ``ValueError`` or ``httpx.HTTPStatusError`` on failure."""
-    if body.k_max < body.k:
-        raise ValueError("k_max must be >= k")
     wants_hits = body.wants_retrieval_hits()
-    answer, citations, follow_up_questions, latency_ms, retrieval_hits, usage = await complete_rag_answer(
-        body.question,
-        body.collection_base,
-        request_id,
-        session_id,
+    return await rag_query_non_stream(
+        question=body.question,
+        collection_base=body.collection_base,
+        request_id=request_id,
+        session_id=session_id,
         k=body.k,
         k_max=body.k_max,
         max_tokens=body.max_tokens,
@@ -164,23 +180,17 @@ async def answer_from_inference_payload_async(
         include_follow_up_questions=body.include_follow_up_questions,
         follow_up_candidates=body.follow_up_candidates,
         follow_up_final=body.follow_up_final,
-        include_retrieval_hits=wants_hits,
+        include_retrieval_hits=body.include_retrieval_hits,
+        debug=body.debug,
+        trace_retrieval=body.trace_retrieval,
+        return_retrieval_hits=body.return_retrieval_hits,
         trace_id=trace_id,
         user=user,
         conversation_id=conversation_id,
-    )
-    return _answer_payload(
-        answer=answer,
-        citations=citations,
-        follow_up_questions=follow_up_questions,
-        latency_ms=latency_ms,
-        retrieval_hits=retrieval_hits,
-        include_retrieval_hits=wants_hits,
-        request_id=request_id,
-        session_id=session_id,
-        trace_id=trace_id,
-        conversation_id=conversation_id,
-        usage=usage,
+        build_payload=lambda **kw: _answer_payload(
+            **kw,
+            include_retrieval_hits=wants_hits,
+        ),
     )
 
 
@@ -188,8 +198,121 @@ mcp = FastMCP(
     "layer-rag-query",
     instructions="RAG tools: Qdrant hybrid search (dense + BM25 + RRF), embeddings, and optional "
     "full answers via INFERENCE_URL /v1/chat/completions (set in .env). "
-    "Pass collection base; ENV suffix comes from .env. request_id and session_id are required for retrieval embedding calls.",
+    "Pass collection base; ENV suffix comes from .env. request_id and session_id are required for retrieval embedding calls. "
+    "Use rag_query for a single JSON answer (same shape as POST /v1/rag/query) or rag_query_stream for all SSE-shaped events.",
 )
+
+def _mcp_rag_query_sync(
+    *,
+    question: str,
+    collection_base: str,
+    request_id: str,
+    session_id: str,
+    k: int = 5,
+    k_max: int = 50,
+    max_tokens: int | None = None,
+    expand_on_not_found: bool = True,
+    rerank_top_n: int | None = None,
+    rerank_return_top_k: int | None = None,
+    retrieve_fallback_n: int | None = None,
+    final_context_top_k: int | None = None,
+    use_reranker: bool = True,
+    include_follow_up_questions: bool = True,
+    follow_up_candidates: int = 8,
+    follow_up_final: int = 3,
+    include_retrieval_hits: bool = False,
+    debug: bool = False,
+    trace_retrieval: bool = False,
+    return_retrieval_hits: bool = False,
+    trace_id: str | None = None,
+    conversation_id: str | None = None,
+) -> dict[str, Any]:
+    conv = resolve_conversation_id(conversation_id)
+    wants_hits = include_retrieval_hits or debug or trace_retrieval or return_retrieval_hits
+    return run_async(
+        rag_query_non_stream(
+            question=question,
+            collection_base=collection_base,
+            request_id=request_id,
+            session_id=session_id,
+            k=k,
+            k_max=k_max,
+            max_tokens=max_tokens,
+            expand_on_not_found=expand_on_not_found,
+            rerank_top_n=rerank_top_n,
+            rerank_return_top_k=rerank_return_top_k,
+            retrieve_fallback_n=retrieve_fallback_n,
+            final_context_top_k=final_context_top_k,
+            use_reranker=use_reranker,
+            include_follow_up_questions=include_follow_up_questions,
+            follow_up_candidates=follow_up_candidates,
+            follow_up_final=follow_up_final,
+            include_retrieval_hits=include_retrieval_hits,
+            debug=debug,
+            trace_retrieval=trace_retrieval,
+            return_retrieval_hits=return_retrieval_hits,
+            trace_id=trace_id,
+            conversation_id=conv,
+            build_payload=lambda **kw: _answer_payload(
+                **kw,
+                include_retrieval_hits=wants_hits,
+            ),
+        )
+    )
+
+
+def _mcp_rag_query_stream_sync(
+    *,
+    question: str,
+    collection_base: str,
+    request_id: str,
+    session_id: str,
+    k: int = 5,
+    k_max: int = 50,
+    max_tokens: int | None = None,
+    expand_on_not_found: bool = True,
+    rerank_top_n: int | None = None,
+    rerank_return_top_k: int | None = None,
+    retrieve_fallback_n: int | None = None,
+    final_context_top_k: int | None = None,
+    use_reranker: bool = True,
+    include_follow_up_questions: bool = True,
+    follow_up_candidates: int = 8,
+    follow_up_final: int = 3,
+    include_retrieval_hits: bool = False,
+    debug: bool = False,
+    trace_retrieval: bool = False,
+    return_retrieval_hits: bool = False,
+    trace_id: str | None = None,
+    conversation_id: str | None = None,
+) -> dict[str, Any]:
+    conv = resolve_conversation_id(conversation_id)
+    return run_async(
+        rag_query_stream_events(
+            question=question,
+            collection_base=collection_base,
+            request_id=request_id,
+            session_id=session_id,
+            k=k,
+            k_max=k_max,
+            max_tokens=max_tokens,
+            expand_on_not_found=expand_on_not_found,
+            rerank_top_n=rerank_top_n,
+            rerank_return_top_k=rerank_return_top_k,
+            retrieve_fallback_n=retrieve_fallback_n,
+            final_context_top_k=final_context_top_k,
+            use_reranker=use_reranker,
+            include_follow_up_questions=include_follow_up_questions,
+            follow_up_candidates=follow_up_candidates,
+            follow_up_final=follow_up_final,
+            include_retrieval_hits=include_retrieval_hits,
+            debug=debug,
+            trace_retrieval=trace_retrieval,
+            return_retrieval_hits=return_retrieval_hits,
+            trace_id=trace_id,
+            conversation_id=conv,
+        )
+    )
 
 
 @mcp.tool
@@ -223,6 +346,110 @@ def embed_text(
 
 
 @mcp.tool
+def rag_query(
+    question: str,
+    collection_base: str,
+    request_id: str,
+    session_id: str,
+    k: int = 5,
+    k_max: int = 50,
+    max_tokens: int | None = None,
+    expand_on_not_found: bool = True,
+    rerank_top_n: int | None = None,
+    rerank_return_top_k: int | None = None,
+    retrieve_fallback_n: int | None = None,
+    final_context_top_k: int | None = None,
+    use_reranker: bool = True,
+    include_follow_up_questions: bool = True,
+    follow_up_candidates: int = 8,
+    follow_up_final: int = 3,
+    include_retrieval_hits: bool = False,
+    debug: bool = False,
+    trace_retrieval: bool = False,
+    return_retrieval_hits: bool = False,
+    trace_id: str | None = None,
+    conversation_id: str | None = None,
+) -> dict[str, Any]:
+    """Non-stream RAG answer (JSON). Same parameters and response as ``POST /v1/rag/query`` without ``stream: true``."""
+    return _mcp_rag_query_sync(
+        question=question,
+        collection_base=collection_base,
+        request_id=request_id,
+        session_id=session_id,
+        k=k,
+        k_max=k_max,
+        max_tokens=max_tokens,
+        expand_on_not_found=expand_on_not_found,
+        rerank_top_n=rerank_top_n,
+        rerank_return_top_k=rerank_return_top_k,
+        retrieve_fallback_n=retrieve_fallback_n,
+        final_context_top_k=final_context_top_k,
+        use_reranker=use_reranker,
+        include_follow_up_questions=include_follow_up_questions,
+        follow_up_candidates=follow_up_candidates,
+        follow_up_final=follow_up_final,
+        include_retrieval_hits=include_retrieval_hits,
+        debug=debug,
+        trace_retrieval=trace_retrieval,
+        return_retrieval_hits=return_retrieval_hits,
+        trace_id=trace_id,
+        conversation_id=conversation_id,
+    )
+
+
+@mcp.tool
+def rag_query_stream(
+    question: str,
+    collection_base: str,
+    request_id: str,
+    session_id: str,
+    k: int = 5,
+    k_max: int = 50,
+    max_tokens: int | None = None,
+    expand_on_not_found: bool = True,
+    rerank_top_n: int | None = None,
+    rerank_return_top_k: int | None = None,
+    retrieve_fallback_n: int | None = None,
+    final_context_top_k: int | None = None,
+    use_reranker: bool = True,
+    include_follow_up_questions: bool = True,
+    follow_up_candidates: int = 8,
+    follow_up_final: int = 3,
+    include_retrieval_hits: bool = False,
+    debug: bool = False,
+    trace_retrieval: bool = False,
+    return_retrieval_hits: bool = False,
+    trace_id: str | None = None,
+    conversation_id: str | None = None,
+) -> dict[str, Any]:
+    """Stream RAG as a list of SSE-shaped events under ``events`` (see ``docs/streaming.md``)."""
+    return _mcp_rag_query_stream_sync(
+        question=question,
+        collection_base=collection_base,
+        request_id=request_id,
+        session_id=session_id,
+        k=k,
+        k_max=k_max,
+        max_tokens=max_tokens,
+        expand_on_not_found=expand_on_not_found,
+        rerank_top_n=rerank_top_n,
+        rerank_return_top_k=rerank_return_top_k,
+        retrieve_fallback_n=retrieve_fallback_n,
+        final_context_top_k=final_context_top_k,
+        use_reranker=use_reranker,
+        include_follow_up_questions=include_follow_up_questions,
+        follow_up_candidates=follow_up_candidates,
+        follow_up_final=follow_up_final,
+        include_retrieval_hits=include_retrieval_hits,
+        debug=debug,
+        trace_retrieval=trace_retrieval,
+        return_retrieval_hits=return_retrieval_hits,
+        trace_id=trace_id,
+        conversation_id=conversation_id,
+    )
+
+
+@mcp.tool
 def answer_from_inference(
     question: str,
     collection_base: str,
@@ -244,52 +471,38 @@ def answer_from_inference(
     debug: bool = False,
     trace_retrieval: bool = False,
     return_retrieval_hits: bool = False,
+    trace_id: str | None = None,
     conversation_id: str | None = None,
 ) -> dict[str, Any]:
-    """Retrieve once (pool k_max), then chat; optional slice widen on NOT_FOUND. Set expand_on_not_found false for single-pass eval."""
-    if follow_up_final > follow_up_candidates:
-        raise ValueError("follow_up_final must be <= follow_up_candidates")
-    wants_hits = include_retrieval_hits or debug or trace_retrieval or return_retrieval_hits
-    conv = resolve_conversation_id(conversation_id)
-    answer, citations, follow_up_questions, latency_ms, retrieval_hits, usage = run_async(
-        complete_rag_answer(
-            question,
-            collection_base,
-            request_id,
-            session_id,
-            k=k,
-            k_max=k_max,
-            max_tokens=max_tokens,
-            expand_on_not_found=expand_on_not_found,
-            rerank_top_n=rerank_top_n,
-            rerank_return_top_k=rerank_return_top_k,
-            retrieve_fallback_n=retrieve_fallback_n,
-            final_context_top_k=final_context_top_k,
-            use_reranker=use_reranker,
-            include_follow_up_questions=include_follow_up_questions,
-            follow_up_candidates=follow_up_candidates,
-            follow_up_final=follow_up_final,
-            include_retrieval_hits=wants_hits,
-            conversation_id=conv,
-        )
-    )
-    return _answer_payload(
-        answer=answer,
-        citations=citations,
-        follow_up_questions=follow_up_questions,
-        latency_ms=latency_ms,
-        retrieval_hits=retrieval_hits,
-        include_retrieval_hits=wants_hits,
+    """Alias for :func:`rag_query` (kept for backward compatibility)."""
+    return _mcp_rag_query_sync(
+        question=question,
+        collection_base=collection_base,
         request_id=request_id,
         session_id=session_id,
-        trace_id=None,
-        conversation_id=conv,
-        usage=usage,
+        k=k,
+        k_max=k_max,
+        max_tokens=max_tokens,
+        expand_on_not_found=expand_on_not_found,
+        rerank_top_n=rerank_top_n,
+        rerank_return_top_k=rerank_return_top_k,
+        retrieve_fallback_n=retrieve_fallback_n,
+        final_context_top_k=final_context_top_k,
+        use_reranker=use_reranker,
+        include_follow_up_questions=include_follow_up_questions,
+        follow_up_candidates=follow_up_candidates,
+        follow_up_final=follow_up_final,
+        include_retrieval_hits=include_retrieval_hits,
+        debug=debug,
+        trace_retrieval=trace_retrieval,
+        return_retrieval_hits=return_retrieval_hits,
+        trace_id=trace_id,
+        conversation_id=conversation_id,
     )
 
 
 @mcp.custom_route("/v1/rag/query", methods=["POST"])
-async def answer_from_inference_http(request: Request) -> JSONResponse:
+async def answer_from_inference_http(request: Request) -> Response:
     """JSON body for ``curl`` when using FastMCP ``--transport http``.
 
     Correlation: ``X-Request-Id``, ``X-Session-Id``, ``X-Trace-Id`` (optional). If request or
@@ -312,17 +525,22 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
     ``conv_<hex>`` id, echoed as ``X-Conversation-Id`` and in the JSON response
   (along with ``request_id``, ``session_id``, and ``trace_id`` in the body).
     """
+    http_t0 = time.perf_counter()
     method = request.method
     path = request.url.path
 
     try:
         data = await request.json()
     except Exception:
-        return JSONResponse({"detail": "Invalid JSON"}, status_code=400)
+        response = JSONResponse({"detail": "Invalid JSON"}, status_code=400)
+        _observe_http_request(request, response, http_t0)
+        return response
     if not isinstance(data, dict):
-        return JSONResponse({"detail": "JSON body must be an object"}, status_code=400)
+        response = JSONResponse({"detail": "JSON body must be an object"}, status_code=400)
+        _observe_http_request(request, response, http_t0)
+        return response
     if _FORBIDDEN_RAG_BODY_KEYS & data.keys():
-        return JSONResponse(
+        response = JSONResponse(
             {
                 "detail": (
                     "request_id, session_id, and trace_id must not appear in the JSON body; "
@@ -331,6 +549,8 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
             },
             status_code=400,
         )
+        _observe_http_request(request, response, http_t0)
+        return response
     request_id, session_id, trace_id = _correlation_from_headers(request)
     if not request_id:
         request_id = str(uuid.uuid4())
@@ -340,11 +560,15 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
     try:
         body = AnswerFromInferenceBody.model_validate(data)
     except ValidationError as e:
-        return JSONResponse({"detail": e.errors()}, status_code=422)
+        response = JSONResponse({"detail": e.errors()}, status_code=422)
+        _observe_http_request(request, response, http_t0)
+        return response
 
     conversation_id = resolve_conversation_id(body.conversation_id)
 
     if _wants_sse(request) or body.stream:
+        stream_latency_ms: dict[str, int] = {}
+
         async def sse_iter():
             """Yield SSE frames from ``complete_rag_answer_stream``. Once headers flushed
             we're locked at HTTP 200, so any error is surfaced in-band as ``error`` +
@@ -374,7 +598,17 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
                         conversation_id=conversation_id,
                     ):
                         ev_name = ev.pop("type")
+                        if ev_name == "latency":
+                            phase = ev.get("phase")
+                            ms = ev.get("ms")
+                            if isinstance(phase, str) and isinstance(ms, int):
+                                stream_latency_ms[phase] = ms
                         yield _sse_event(ev_name, ev)
+                    observe_rag_query(
+                        status_code=200,
+                        stream=True,
+                        latency_ms=stream_latency_ms or None,
+                    )
                 except asyncio.CancelledError:
                     # Client closed the connection (Pause / abort / tab close). Don't
                     # try to emit `error` / `done` — the socket is already gone — but
@@ -416,11 +650,13 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
         }
         if trace_id:
             sse_headers["X-Trace-Id"] = trace_id
-        return StreamingResponse(
+        response = StreamingResponse(
             sse_iter(),
             media_type="text/event-stream",
             headers=sse_headers,
         )
+        _observe_http_request(request, response, http_t0)
+        return response
 
     try:
         # method/path/status for stderr JSON lines (matches ASGI access log when happy path).
@@ -434,12 +670,16 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
                 conversation_id=conversation_id,
             )
     except ValueError as e:
-        return JSONResponse({"detail": str(e)}, status_code=400)
+        response = JSONResponse({"detail": str(e)}, status_code=400)
+        _observe_http_request(request, response, http_t0)
+        return response
     except httpx.HTTPStatusError as e:
-        return JSONResponse(
+        response = JSONResponse(
             {"detail": e.response.text or str(e)},
             status_code=502,
         )
+        _observe_http_request(request, response, http_t0)
+        return response
     hdrs: dict[str, str] = {
         "X-Request-Id": request_id,
         "X-Session-Id": session_id,
@@ -448,19 +688,58 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
     }
     if trace_id:
         hdrs["X-Trace-Id"] = trace_id
-    return JSONResponse(out, headers=hdrs)
+    response = JSONResponse(out, headers=hdrs)
+    _observe_http_request(request, response, http_t0)
+    return response
+
+
+@mcp.custom_route("/version", methods=["GET"], include_in_schema=False)
+async def version(request: Request) -> JSONResponse:
+    """Build identity for probes and dashboards."""
+    http_t0 = time.perf_counter()
+    with bind_http_context(request.method, request.url.path, status="200"):
+        response = JSONResponse(
+            {
+                "app_name": APP_NAME,
+                "app_version": get_app_version(),
+            }
+        )
+    _observe_http_request(request, response, http_t0)
+    return response
+
+
+@mcp.custom_route("/metrics", methods=["GET"], include_in_schema=False)
+async def metrics(request: Request) -> Response:
+    """Prometheus scrape endpoint."""
+    http_t0 = time.perf_counter()
+    response = Response(
+        content=metrics_payload(),
+        media_type=metrics_content_type(),
+    )
+    _observe_http_request(request, response, http_t0)
+    return response
 
 
 @mcp.custom_route("/health", methods=["GET"], include_in_schema=False)
 async def health(request: Request) -> JSONResponse:
     """Liveness: always 200 while the process is up."""
+    http_t0 = time.perf_counter()
     with bind_http_context(request.method, request.url.path, status="200"):
-        return JSONResponse({"status": "ok"})
+        response = JSONResponse(
+            {
+                "status": "ok",
+                "app_name": APP_NAME,
+                "app_version": get_app_version(),
+            }
+        )
+    _observe_http_request(request, response, http_t0)
+    return response
 
 
 @mcp.custom_route("/ready", methods=["GET"], include_in_schema=False)
 async def ready(request: Request) -> JSONResponse:
     """Readiness: 200 when Qdrant responds to ``get_collections``, else 503."""
+    http_t0 = time.perf_counter()
     url, api_key = resolve_connection_params()
     client = create_async_client(url, api_key)
     try:
@@ -472,12 +751,27 @@ async def ready(request: Request) -> JSONResponse:
                     "ready probe failed",
                     extra={"error_type": type(e).__name__, "error_message": str(e)},
                 )
-            return JSONResponse(
-                {"status": "not_ready", "detail": type(e).__name__},
+            response = JSONResponse(
+                {
+                    "status": "not_ready",
+                    "detail": type(e).__name__,
+                    "app_name": APP_NAME,
+                    "app_version": get_app_version(),
+                },
                 status_code=503,
             )
+            _observe_http_request(request, response, http_t0)
+            return response
         with bind_http_context(request.method, request.url.path, status="200"):
-            return JSONResponse({"status": "ready"})
+            response = JSONResponse(
+                {
+                    "status": "ready",
+                    "app_name": APP_NAME,
+                    "app_version": get_app_version(),
+                }
+            )
+        _observe_http_request(request, response, http_t0)
+        return response
     finally:
         await client.close()
 

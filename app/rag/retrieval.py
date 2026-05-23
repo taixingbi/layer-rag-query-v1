@@ -12,16 +12,16 @@ from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Filter
 from rank_bm25 import BM25Okapi
 
-from app.access import RagUser, build_qdrant_access_filter
-from app.config import (
+from app.rag.access import RagUser, build_qdrant_access_filter
+from app.core.config import (
     get_env,
     TOP_K_DENSE,
     RRF_K,
 )
 from app.http.embed import embed_text
-from app.logging_config import logger
+from app.core.logging_config import logger
 from app.qdrant.client import create_async_client, resolve_connection_params
-from app.request_context import bind_request_context
+from app.core.request_context import bind_request_context
 
 _TOKEN_RE = re.compile(r"\b\w+\b")
 LexicalRetriever = Callable[[str, int], Awaitable[list[dict]]]
@@ -261,9 +261,9 @@ async def query_chunks(
             Each returned hit should include ``chunk_id`` and either ``bm25_rank`` or
             ``bm25_score``. When omitted, BM25 is computed only on dense candidates
             (fallback mode, not full-corpus lexical retrieval).
-        user: Per-request identity (see :class:`app.access.RagUser`). When set and
+        user: Per-request identity (see :class:`app.rag.access.RagUser`). When set and
             non-admin, an access ``Filter`` is built via
-            :func:`app.access.build_qdrant_access_filter` and applied to the dense
+            :func:`app.rag.access.build_qdrant_access_filter` and applied to the dense
             leg only. The BM25 fallback runs over the (already-filtered) dense pool,
             so it cascades for free; an out-of-process ``lexical_retriever`` is the
             caller's responsibility to filter symmetrically.

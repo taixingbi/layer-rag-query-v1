@@ -1,7 +1,7 @@
 # Per-request access control
 
 `POST /v1/rag/query` filters Qdrant retrieval against a per-request identity carried
-in HTTP headers. The filter runs on the **dense leg** of [`query_chunks`](../app/retrieval.py)
+in HTTP headers. The filter runs on the **dense leg** of [`query_chunks`](../app/rag/retrieval.py)
 and cascades to the BM25 fallback (which today re-ranks the already-filtered dense pool).
 
 ## Wire contract
@@ -53,7 +53,7 @@ field is absent, so chunks without an `access` payload are returned only to admi
 
 ## Qdrant filter shape
 
-Built by [`build_qdrant_access_filter`](../app/access.py) and forwarded to
+Built by [`build_qdrant_access_filter`](../app/rag/access.py) and forwarded to
 `AsyncQdrantClient.query_points(..., query_filter=...)`. Example for
 `X-User-Roles: hr,recruiter`, `X-User-Groups: engineering`,
 `X-User-Teams: rag-platform`:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from qdrant_client import AsyncQdrantClient
 
-from app.config import get_qdrant_api_key, get_qdrant_url
+from app.core.config import get_qdrant_api_key, get_qdrant_url
 
 
 def resolve_connection_params(
@@ -14,7 +14,7 @@ def resolve_connection_params(
     """
     Resolve Qdrant connection settings.
 
-    Explicit args override environment settings from ``app.config``.
+    Explicit args override environment settings from ``app.core.config``.
     """
     url = (qdrant_url or get_qdrant_url()).strip()
     if not url:

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-RAG: ``app.retrieval.query_chunks`` → ranked passages → ``/v1/chat/completions`` (OpenAI-compatible).
+RAG: ``app.rag.retrieval.query_chunks`` → ranked passages → ``/v1/chat/completions`` (OpenAI-compatible).
 
 Run from repo root (requires ``.env``). Defaults match a local vLLM/LMDeploy-style server:
 
   INFERENCE_URL=http://192.168.86.179:30180 \\
   INFERENCE_MODEL=Qwen/Qwen2.5-7B-Instruct \\
-  python -m app.rag_answer "where is jersey city" -c taixing_knowledge
+  python -m app.rag "where is jersey city" -c taixing_knowledge
 
 Embedding tracing for retrieval uses ``RAG_REQUEST_ID`` / ``RAG_SESSION_ID`` if set,
 else random UUIDs per run.
@@ -25,7 +25,7 @@ from typing import Any
 
 import httpx
 
-from app.config import (
+from app.core.config import (
     get_final_context_top_k,
     get_inference_max_tokens,
     get_inference_model,
@@ -38,16 +38,16 @@ from app.config import (
 )
 from collections.abc import AsyncIterator
 
-from app.access import RagUser, compact_for_log
-from app.asyncio_util import run_async
-from app.follow_up import generate_follow_ups
+from app.rag.access import RagUser, compact_for_log
+from app.core.asyncio_util import run_async
+from app.rag.follow_up import generate_follow_ups
 from app.http.embed import embed_text
 from app.http.inference import chat_complete, chat_complete_collect, resolve_conversation_id
 from app.http.usage import UsageTokens, build_usage_payload, merge_usage
 from app.http.rerank import rerank_texts
-from app.logging_config import logger
-from app.retrieval import query_chunks
-from app.request_context import bind_request_context
+from app.core.logging_config import logger
+from app.rag.retrieval import query_chunks
+from app.core.request_context import bind_request_context
 
 _NOT_FOUND_REPLY = "NOT_FOUND"
 
@@ -473,7 +473,7 @@ async def complete_rag_answer(
 ) -> tuple[str, list[dict], list[str], dict[str, int], list[dict], dict[str, UsageTokens]]:
     """
     ``query_chunks`` → numbered context → ``POST .../v1/chat/completions``.
-    Uses ``get_inference_url`` / ``get_inference_model`` / ``get_inference_max_tokens`` (from ``.env`` via ``app.config``).
+    Uses ``get_inference_url`` / ``get_inference_model`` / ``get_inference_max_tokens`` (from ``.env`` via ``app.core.config``).
 
     Returns ``(answer, citations, follow_up_questions, latency_ms, retrieval_hits, usage)`` where ``citations`` lists only passages the model
     referenced with ``[n]`` in ``answer`` (each item: ``cite_id``, ``chunk_id``, ``source``, ``text``).

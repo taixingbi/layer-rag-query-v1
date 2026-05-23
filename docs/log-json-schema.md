@@ -1,11 +1,11 @@
 # Log JSON schema (design)
 
-Structured logs for **layer-rag-query** are emitted by the stdlib logger `layer_rag.query`, configured in [`app/logging_config.py`](../app/logging_config.py). This document describes the **on-the-wire JSON** shape (one UTF-8 JSON object per line).
+Structured logs for **layer-rag-query** are emitted by the stdlib logger `layer_rag.query`, configured in [`app/core/logging_config.py`](../app/core/logging_config.py). This document describes the **on-the-wire JSON** shape (one UTF-8 JSON object per line).
 
 ## Goals
 
 - **Machine-parseable**: single-line JSON suitable for `jq`, log agents, or downstream indexing.
-- **Correlation**: tie log lines to embedding / RAG / HTTP work via `request_id`, `session_id`, optional `trace_id`, and optional `conversation_id` when context is set (`app.request_context`).
+- **Correlation**: tie log lines to embedding / RAG / HTTP work via `request_id`, `session_id`, optional `trace_id`, and optional `conversation_id` when context is set (`app.core.request_context`).
 - **HTTP hints**: optional `method`, `path`, `status` for ASGI routes when context or `extra=` supplies them.
 - **No noise**: omit `error` when there is no exception (no `"error": null`).
 
@@ -88,5 +88,5 @@ To add new structured fields for dashboards or alerts, extend that tuple in `log
 
 ## Related code
 
-- Formatter and filter: [`app/logging_config.py`](../app/logging_config.py) — `_JsonFormatter`, `_RequestContextFilter`, `setup_logging`.
-- Context setters: [`app/request_context.py`](../app/request_context.py).
+- Formatter and filter: [`app/core/logging_config.py`](../app/core/logging_config.py) — `_JsonFormatter`, `_RequestContextFilter`, `setup_logging`.
+- Context setters: [`app/core/request_context.py`](../app/core/request_context.py).

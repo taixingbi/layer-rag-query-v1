@@ -12,7 +12,7 @@ import httpx
 
 from app.http._correlation import correlation_headers
 from app.http.usage import UsageTokens, parse_usage
-from app.logging_config import logger
+from app.core.logging_config import logger
 
 
 def resolve_conversation_id(raw: str | None) -> str:
