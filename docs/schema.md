@@ -14,7 +14,7 @@ Contract reference for **layer-rag-query** HTTP routes. Implementation: [`app/ma
 | `GET` | `/ready` | JSON | Readiness (Qdrant reachable) |
 | `GET` | `/metrics` | Prometheus text | HTTP + RAG metrics |
 
-MCP tools (`retrieve_chunks`, `embed_text`, `rag_query`, `rag_query_stream`, `answer_from_inference`) use the same RAG logic but different wire shapes; this document covers **HTTP only**. Non-stream MCP returns the JSON body described below; stream MCP returns `{"events": [<SSE-shaped objects>]}` (see [streaming.md](streaming.md)).
+MCP tool `rag_query` uses the same RAG logic with a `stream` argument (`false` → JSON body below; `true` → `{"events": [...]}` per [streaming.md](streaming.md)). Aliases `answer_from_inference` / `rag_query_stream` remain for compatibility. This document covers **HTTP only**.
 
 ---
 

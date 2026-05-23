@@ -126,7 +126,7 @@ asyncio.run(main())
 
 ## MCP (FastMCP)
 
-Optional [FastMCP](https://gofastmcp.com) server over **stdio** (e.g. Cursor): tools `retrieve_chunks`, `embed_text`, `rag_query` (non-stream JSON, same shape as `POST /v1/rag/query`), `rag_query_stream` (collects SSE-shaped events into `{"events": [...]}`), and `answer_from_inference` (alias of `rag_query`).
+Optional [FastMCP](https://gofastmcp.com) server over **stdio** (e.g. Cursor): tools `retrieve_chunks`, `embed_text`, and `rag_query` (`stream: false` → JSON like `POST /v1/rag/query`; `stream: true` → `{"events": [...]}`). Aliases: `answer_from_inference` (`stream: false`), `rag_query_stream` (`stream: true`).
 
 ```bash
 uv pip install -e ".[mcp]"
@@ -233,7 +233,7 @@ Useful flags: `--single-pass` (one chat, no context widen on `NOT_FOUND`), `--no
 
 Same flow as: retrieve grounded passages, join them as context, then call your stack’s chat endpoint with `messages` (see `app/rag/rag_answer.py`). Inspect the OpenAPI UI at `http://<host>:30180/docs` for extra fields (temperature, etc.) if you extend the script.
 
-MCP tools `rag_query`, `rag_query_stream`, and `answer_from_inference` accept the same optional booleans as the HTTP body for retrieval hits (`include_retrieval_hits`, `debug`, `trace_retrieval`, `return_retrieval_hits`). Optional `trace_id` is supported on MCP RAG tools (HTTP uses `X-Trace-Id`).
+MCP tool `rag_query` accepts the same optional fields as the HTTP body, including `stream` and retrieval-hit debug flags (`include_retrieval_hits`, `debug`, `trace_retrieval`, `return_retrieval_hits`). On HTTP transport, correlation and access ids can be sent as headers (`X-Request-Id`, `X-Session-Id`, `X-Trace-Id`, `X-User-*`) instead of tool arguments.
 
 ## Evaluation
 

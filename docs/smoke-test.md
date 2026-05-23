@@ -196,9 +196,9 @@ Either request expects `meta`, retrieval `latency` phases, `answer_start`, sever
 
 ## MCP over HTTP (`/v1/mcp`)
 
-For plain scripts and gateways, prefer **`POST /v1/rag/query`** above. The sections below call the same RAG logic through the **MCP Streamable HTTP** transport at `http://127.0.0.1:8000/v1/mcp` (tools `rag_query` and `rag_query_stream`).
+For plain scripts and gateways, prefer **`POST /v1/rag/query`** above. The sections below call the same RAG logic through the **MCP Streamable HTTP** transport at `http://127.0.0.1:8000/v1/mcp` (tool **`rag_query`**, with `"stream": false` or `"stream": true` in arguments — same as the HTTP body flag).
 
-MCP responses are **SSE frames** (`event: message` + `data: {...}`), not raw JSON. Tool results arrive in `result.content[0].text` as a JSON string (non-stream) or a JSON object with an `events` array (stream tool).
+MCP responses are **SSE frames** (`event: message` + `data: {...}`), not raw JSON. Tool results arrive in `result.content[0].text` as a JSON string when `"stream": false`, or a JSON object with an `events` array when `"stream": true`.
 
 On **HTTP** transport, pass the same correlation and access headers as `POST /v1/rag/query` on **every** `POST /v1/mcp` call (including `tools/call`). Headers override `request_id`, `session_id`, and `trace_id` tool arguments when set. Stdio MCP (Cursor) has no HTTP headers — pass `request_id` / `session_id` in tool arguments instead.
 
@@ -226,7 +226,7 @@ MCP_HDR=(
 )
 ```
 
-For `rag_query_stream`, use distinct ids (e.g. `req-mcp-stream-1`, `ses-mcp-stream-1`, `trc-mcp-stream-1`) in the same header set.
+For `"stream": true`, use distinct ids (e.g. `req-mcp-stream-1`, `ses-mcp-stream-1`, `trc-mcp-stream-1`) in the header set below.
 
 ### MCP session (run once per shell)
 
@@ -256,7 +256,7 @@ curl -sS -X POST "${MCP_URL}" \
   -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' > /dev/null
 ```
 
-### MCP `rag_query` (non-stream)
+### MCP `rag_query` — `"stream": false` (non-stream)
 
 Same JSON shape as `POST /v1/rag/query` (`answer`, `citations`, `follow_up_questions`, `latency_ms`, `usage`, correlation fields). Correlation ids come from the **HTTP headers** above (echoed in the JSON body).
 
@@ -275,6 +275,7 @@ curl -sS -X POST "${MCP_URL}" \
       "arguments": {
         "question": "what is taixing visa status in us?",
         "collection_base": "taixing_knowledge",
+        "stream": false,
         "k": 5,
         "k_max": 50
       }
@@ -288,9 +289,9 @@ Optional: extract the embedded answer JSON with `jq` (requires the `data:` line 
 curl -sS ... | sed -n 's/^data: //p' | jq -r '.result.content[0].text' | jq .
 ```
 
-### MCP `rag_query_stream` (stream events as JSON)
+### MCP `rag_query` — `"stream": true`
 
-Runs `complete_rag_answer_stream` and returns `{"events": [{"type": "meta", ...}, {"type": "answer_delta", ...}, ...]}` — same event names as HTTP SSE ([streaming.md](streaming.md)). Use `expand_on_not_found: false` for a shorter smoke run.
+Returns `{"events": [{"type": "meta", ...}, {"type": "answer_delta", ...}, ...]}` — same event names as HTTP SSE ([streaming.md](streaming.md)). Use `expand_on_not_found: false` for a shorter smoke run.
 
 ```bash
 curl -sS -X POST "${MCP_URL}" \
@@ -309,10 +310,11 @@ curl -sS -X POST "${MCP_URL}" \
     "id": 3,
     "method": "tools/call",
     "params": {
-      "name": "rag_query_stream",
+      "name": "rag_query",
       "arguments": {
         "question": "what is taixing visa status in us?",
         "collection_base": "taixing_knowledge",
+        "stream": true,
         "k": 5,
         "k_max": 50,
         "expand_on_not_found": false
@@ -424,8 +426,8 @@ curl -sS "${QDRANT_URL}/collections/taixing_knowledge_${ENV}" \
 | Readiness (probes Qdrant) | `GET` | `http://127.0.0.1:8000/ready` |
 | RAG answer (JSON) | `POST` | `http://127.0.0.1:8000/v1/rag/query` |
 | RAG answer (SSE) | `POST` | `http://127.0.0.1:8000/v1/rag/query` (with `Accept: text/event-stream` or `"stream": true` in body) |
-| MCP `rag_query` (non-stream) | `POST` | `http://127.0.0.1:8000/v1/mcp` (`tools/call` → `rag_query`) |
-| MCP `rag_query_stream` | `POST` | `http://127.0.0.1:8000/v1/mcp` (`tools/call` → `rag_query_stream`) |
+| MCP `rag_query` (`stream: false`) | `POST` | `http://127.0.0.1:8000/v1/mcp` (`tools/call` → `rag_query`) |
+| MCP `rag_query` (`stream: true`) | `POST` | `http://127.0.0.1:8000/v1/mcp` (`tools/call` → `rag_query`) |
 | Embedding (upstream) | `POST` | `${EMBEDDING_URL}/v1/embeddings` |
 | Chat (upstream) | `POST` | `${INFERENCE_URL}/v1/chat/completions` |
 | Rerank (upstream) | `POST` | `${RERANK_URL}/v1/rerank` |
