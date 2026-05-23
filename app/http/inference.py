@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 import httpx
@@ -29,6 +30,14 @@ def resolve_conversation_id(raw: str | None) -> str:
 class ChatCompletionResult:
     content: str
     usage: UsageTokens | None
+
+
+@dataclass(frozen=True)
+class ChatStreamChunk:
+    """One piece of a streaming chat completion (token/text delta and/or usage)."""
+
+    delta: str = ""
+    usage: UsageTokens | None = None
 
 
 async def chat_complete(
@@ -87,7 +96,7 @@ async def chat_complete(
     return ChatCompletionResult(content=reply, usage=usage)
 
 
-async def chat_complete_collect(
+async def chat_complete_stream(
     *,
     base_url: str,
     model: str,
@@ -98,11 +107,10 @@ async def chat_complete_collect(
     trace_id: str | None = None,
     conversation_id: str | None = None,
     timeout: float = 60.0,
-) -> ChatCompletionResult:
-    """Buffer a streaming chat completion; return full text and usage from the final chunk.
+) -> AsyncIterator[ChatStreamChunk]:
+    """Yield assistant text deltas from upstream SSE as they arrive.
 
-    Requests ``stream_options.include_usage`` so gateways that support OpenAI streaming
-    usage emit token counts on the last SSE frame.
+    Usage (when present) is emitted on the last chunk(s) with ``stream_options.include_usage``.
     """
     url = f"{base_url.rstrip('/')}/v1/chat/completions"
     payload: dict[str, object] = {
@@ -122,8 +130,6 @@ async def chat_complete_collect(
     t0 = time.perf_counter()
     ttft_ms: int | None = None
     char_count = 0
-    buf: list[str] = []
-    usage: UsageTokens | None = None
     try:
         async with httpx.AsyncClient() as client:
             async with client.stream(
@@ -145,16 +151,15 @@ async def chat_complete_collect(
                     except json.JSONDecodeError:
                         continue
                     chunk_usage = parse_usage(chunk)
-                    if chunk_usage:
-                        usage = chunk_usage
                     choices = chunk.get("choices") or [{}]
                     delta = (choices[0] or {}).get("delta", {}).get("content") or ""
-                    if not delta:
-                        continue
-                    if ttft_ms is None:
-                        ttft_ms = int(round((time.perf_counter() - t0) * 1000))
-                    char_count += len(delta)
-                    buf.append(delta)
+                    if delta:
+                        if ttft_ms is None:
+                            ttft_ms = int(round((time.perf_counter() - t0) * 1000))
+                        char_count += len(delta)
+                        yield ChatStreamChunk(delta=delta)
+                    if chunk_usage:
+                        yield ChatStreamChunk(usage=chunk_usage)
     except asyncio.CancelledError:
         cancel_ms = int(round((time.perf_counter() - t0) * 1000))
         cancel_ttft = ttft_ms if ttft_ms is not None else 0
@@ -186,4 +191,36 @@ async def chat_complete_collect(
         gen_ms,
         extra={"ttft_ms": final_ttft, "gen_ms": gen_ms},
     )
+
+
+async def chat_complete_collect(
+    *,
+    base_url: str,
+    model: str,
+    messages: list[dict],
+    max_tokens: int,
+    request_id: str,
+    session_id: str,
+    trace_id: str | None = None,
+    conversation_id: str | None = None,
+    timeout: float = 60.0,
+) -> ChatCompletionResult:
+    """Buffer a streaming chat completion; return full text and usage from the final chunk."""
+    buf: list[str] = []
+    usage: UsageTokens | None = None
+    async for piece in chat_complete_stream(
+        base_url=base_url,
+        model=model,
+        messages=messages,
+        max_tokens=max_tokens,
+        request_id=request_id,
+        session_id=session_id,
+        trace_id=trace_id,
+        conversation_id=conversation_id,
+        timeout=timeout,
+    ):
+        if piece.delta:
+            buf.append(piece.delta)
+        if piece.usage:
+            usage = piece.usage
     return ChatCompletionResult(content="".join(buf), usage=usage)

@@ -15,7 +15,8 @@ from typing import Any
 
 import httpx
 import fastmcp
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
+from fastmcp.server.dependencies import CurrentContext
 from pydantic import BaseModel, Field, ValidationError, model_validator
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
@@ -35,7 +36,10 @@ from app.http.inference import resolve_conversation_id
 from app.http.usage import UsageTokens
 from app.core.logging_config import logger
 from app.qdrant.client import create_async_client, resolve_connection_params
-from app.rag.mcp_tools import rag_query_non_stream, rag_query_stream_events
+from app.rag.mcp_tools import (
+    rag_query_non_stream,
+    rag_query_stream_events_mcp,
+)
 from app.rag.rag_answer import complete_rag_answer_stream
 from app.core.request_context import bind_http_context, bind_request_context
 from app.rag.mcp_http import resolve_mcp_rag_call
@@ -199,11 +203,13 @@ mcp = FastMCP(
     instructions="RAG tools: Qdrant hybrid search (dense + BM25 + RRF), embeddings, and optional "
     "full answers via INFERENCE_URL /v1/chat/completions (set in .env). "
     "Pass collection base; ENV suffix comes from .env. request_id and session_id are required for retrieval embedding calls. "
-    "Use rag_query with stream=false for a single JSON answer (same shape as POST /v1/rag/query) or stream=true for SSE-shaped events. "
+    "Use rag_query with stream=false for a single JSON answer (same shape as POST /v1/rag/query) or stream=true for live RAG events "
+    "(MCP progress notifications + final {\"events\": [...]}; upstream answer tokens stream as they are generated). "
     "On HTTP transport, pass X-Request-Id, X-Session-Id, X-Trace-Id, and X-User-* headers on each POST /v1/mcp call.",
 )
 
-def _mcp_rag_query_sync(
+async def _mcp_rag_query_impl(
+    mcp_ctx: Context,
     *,
     question: str,
     collection_base: str,
@@ -229,7 +235,7 @@ def _mcp_rag_query_sync(
     trace_id: str | None = None,
     conversation_id: str | None = None,
 ) -> dict[str, Any]:
-    ctx = resolve_mcp_rag_call(
+    call_ctx = resolve_mcp_rag_call(
         request_id=request_id,
         session_id=session_id,
         trace_id=trace_id,
@@ -239,8 +245,8 @@ def _mcp_rag_query_sync(
     rag_kwargs = dict(
         question=question,
         collection_base=collection_base,
-        request_id=ctx.request_id,
-        session_id=ctx.session_id,
+        request_id=call_ctx.request_id,
+        session_id=call_ctx.session_id,
         k=k,
         k_max=k_max,
         max_tokens=max_tokens,
@@ -257,27 +263,25 @@ def _mcp_rag_query_sync(
         debug=debug,
         trace_retrieval=trace_retrieval,
         return_retrieval_hits=return_retrieval_hits,
-        trace_id=ctx.trace_id,
-        user=ctx.user,
-        conversation_id=ctx.conversation_id,
+        trace_id=call_ctx.trace_id,
+        user=call_ctx.user,
+        conversation_id=call_ctx.conversation_id,
     )
     with bind_request_context(
-        ctx.request_id,
-        ctx.session_id,
-        trace_id=ctx.trace_id,
-        user_id=ctx.user.id,
-        conversation_id=ctx.conversation_id,
+        call_ctx.request_id,
+        call_ctx.session_id,
+        trace_id=call_ctx.trace_id,
+        user_id=call_ctx.user.id,
+        conversation_id=call_ctx.conversation_id,
     ):
         if stream:
-            return run_async(rag_query_stream_events(**rag_kwargs))
-        return run_async(
-            rag_query_non_stream(
-                **rag_kwargs,
-                build_payload=lambda **kw: _answer_payload(
-                    **kw,
-                    include_retrieval_hits=wants_hits,
-                ),
-            )
+            return await rag_query_stream_events_mcp(mcp_ctx, **rag_kwargs)
+        return await rag_query_non_stream(
+            **rag_kwargs,
+            build_payload=lambda **kw: _answer_payload(
+                **kw,
+                include_retrieval_hits=wants_hits,
+            ),
         )
 
 
@@ -312,7 +316,7 @@ def embed_text(
 
 
 @mcp.tool
-def rag_query(
+async def rag_query(
     question: str,
     collection_base: str,
     request_id: str = "",
@@ -336,16 +340,19 @@ def rag_query(
     return_retrieval_hits: bool = False,
     trace_id: str | None = None,
     conversation_id: str | None = None,
+    mcp_ctx: Context = CurrentContext(),
 ) -> dict[str, Any]:
     """RAG answer via MCP. Same parameters as ``POST /v1/rag/query``.
 
     Set ``stream=false`` (default) for one JSON object (``answer``, ``citations``, …).
-    Set ``stream=true`` for ``{"events": [...]}`` with SSE-shaped events ([streaming.md](streaming.md)).
+    Set ``stream=true`` for live RAG events over MCP progress notifications (see ``docs/streaming.md``),
+    plus a final ``{"streamed": true, "events": [...]}`` tool result.
 
     On HTTP transport, set correlation and access headers on the MCP request (they override
     ``request_id`` / ``session_id`` / ``trace_id`` tool arguments). See ``docs/smoke-test.md``.
     """
-    return _mcp_rag_query_sync(
+    return await _mcp_rag_query_impl(
+        mcp_ctx,
         question=question,
         collection_base=collection_base,
         request_id=request_id,
@@ -373,7 +380,7 @@ def rag_query(
 
 
 @mcp.tool
-def rag_query_stream(
+async def rag_query_stream(
     question: str,
     collection_base: str,
     request_id: str = "",
@@ -396,9 +403,11 @@ def rag_query_stream(
     return_retrieval_hits: bool = False,
     trace_id: str | None = None,
     conversation_id: str | None = None,
+    mcp_ctx: Context = CurrentContext(),
 ) -> dict[str, Any]:
     """Alias for :func:`rag_query` with ``stream=true`` (kept for backward compatibility)."""
-    return _mcp_rag_query_sync(
+    return await _mcp_rag_query_impl(
+        mcp_ctx,
         question=question,
         collection_base=collection_base,
         request_id=request_id,
@@ -426,7 +435,7 @@ def rag_query_stream(
 
 
 @mcp.tool
-def answer_from_inference(
+async def answer_from_inference(
     question: str,
     collection_base: str,
     request_id: str = "",
@@ -449,9 +458,11 @@ def answer_from_inference(
     return_retrieval_hits: bool = False,
     trace_id: str | None = None,
     conversation_id: str | None = None,
+    mcp_ctx: Context = CurrentContext(),
 ) -> dict[str, Any]:
     """Alias for :func:`rag_query` with ``stream=false`` (kept for backward compatibility)."""
-    return _mcp_rag_query_sync(
+    return await _mcp_rag_query_impl(
+        mcp_ctx,
         question=question,
         collection_base=collection_base,
         request_id=request_id,

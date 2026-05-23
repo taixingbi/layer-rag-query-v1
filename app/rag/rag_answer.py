@@ -42,7 +42,12 @@ from app.rag.access import RagUser, compact_for_log
 from app.core.asyncio_util import run_async
 from app.rag.follow_up import generate_follow_ups
 from app.http.embed import embed_text
-from app.http.inference import chat_complete, chat_complete_collect, resolve_conversation_id
+from app.http.inference import (
+    chat_complete,
+    chat_complete_collect,
+    chat_complete_stream,
+    resolve_conversation_id,
+)
 from app.http.usage import UsageTokens, build_usage_payload, merge_usage
 from app.http.rerank import rerank_texts
 from app.core.logging_config import logger
@@ -50,11 +55,6 @@ from app.rag.retrieval import query_chunks
 from app.core.request_context import bind_request_context
 
 _NOT_FOUND_REPLY = "NOT_FOUND"
-
-# Chunk size when re-streaming the final answer after widen attempts (user-visible deltas
-# only; intermediate NOT_FOUND attempts are buffered, not sent).
-_STREAM_ANSWER_VISUAL_CHUNK_CHARS = 48
-
 
 def _elapsed_ms(since: float) -> int:
     """Wall time in milliseconds from ``time.perf_counter()`` mark ``since``."""
@@ -687,8 +687,7 @@ async def complete_rag_answer_stream(
 
     Widen attempts (NOT_FOUND / empty with ``expand_on_not_found``) run chat upstream
     but **do not** emit ``answer_delta``; each widen emits ``retrieval_widen`` only, then
-    the final answer is streamed after ``answer_start`` (chunked for UX; not raw
-    per-token upstream frames on that final leg).
+    the final answer streams upstream token/text deltas after ``answer_start``.
 
     Validation errors raise ``ValueError`` BEFORE any event is yielded; the route
     handler maps that to a 4xx ``JSONResponse`` so the wire never starts an SSE stream
@@ -746,6 +745,7 @@ async def complete_rag_answer_stream(
         chunks_for_followups: list[dict] = []
         chat_ms_total = 0
         chat_usage: UsageTokens | None = None
+        answer_started = False
         while True:
             chunks_for_followups = prep.candidate_chunks[:current_k]
             context, last_citations = _build_numbered_context(chunks_for_followups)
@@ -758,8 +758,17 @@ async def complete_rag_answer_stream(
                     ),
                 },
             ]
+            next_k = min(
+                current_k * 2,
+                prep.final_context_top_k,
+                len(prep.candidate_chunks),
+            )
+            if not answer_started:
+                yield {"type": "answer_start"}
+                answer_started = True
             t_chat = time.perf_counter()
-            chat_result = await chat_complete_collect(
+            attempt_parts: list[str] = []
+            async for piece in chat_complete_stream(
                 base_url=prep.infer_base,
                 model=prep.model,
                 messages=messages,
@@ -768,10 +777,14 @@ async def complete_rag_answer_stream(
                 session_id=session_id,
                 trace_id=trace_id,
                 conversation_id=conv,
-            )
+            ):
+                if piece.delta:
+                    attempt_parts.append(piece.delta)
+                    yield {"type": "answer_delta", "text": piece.delta}
+                if piece.usage:
+                    chat_usage = merge_usage(chat_usage, piece.usage)
             chat_ms_total += _elapsed_ms(t_chat)
-            last_answer = chat_result.content
-            chat_usage = merge_usage(chat_usage, chat_result.usage)
+            last_answer = "".join(attempt_parts)
 
             if not _answer_needs_more_context(last_answer):
                 logger.info("complete_rag_answer_stream chat ok k_used=%s", current_k)
@@ -785,7 +798,6 @@ async def complete_rag_answer_stream(
                 )
                 break
 
-            next_k = min(current_k * 2, prep.final_context_top_k, len(prep.candidate_chunks))
             if next_k <= current_k:
                 logger.info(
                     "complete_rag_answer_stream done needs_more_context k_used=%s",
@@ -803,13 +815,9 @@ async def complete_rag_answer_stream(
                 "prev_k": current_k,
                 "next_k": next_k,
             }
+            yield {"type": "answer_start"}
             current_k = next_k
 
-        yield {"type": "answer_start"}
-        text_out = last_answer
-        step = _STREAM_ANSWER_VISUAL_CHUNK_CHARS
-        for i in range(0, len(text_out), step):
-            yield {"type": "answer_delta", "text": text_out[i : i + step]}
         yield {"type": "answer_end"}
         yield {"type": "latency", "phase": "chat", "ms": chat_ms_total}
 

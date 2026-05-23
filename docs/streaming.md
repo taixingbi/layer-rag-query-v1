@@ -12,7 +12,9 @@ Streaming is opt-in. Trigger it by **either** of:
 
 If both are present they're OR-ed (any single trigger wins). Anything else falls back to JSON. Query-param triggers (`?stream=1`) are intentionally not supported — keep streaming opt-in via header or body so URLs stay clean.
 
-The MCP tool `rag_query` with `"stream": false` (alias `answer_from_inference`), the `python -m app.rag` CLI, and any caller that doesn't ask for streaming still call the non-stream `complete_rag_answer` and get a single JSON object. For MCP with `"stream": true` (alias `rag_query_stream`), the tool runs `complete_rag_answer_stream` and returns `{"events": [{"type": "meta", ...}, {"type": "answer_delta", ...}, ...]}`.
+The MCP tool `rag_query` with `"stream": false` (alias `answer_from_inference`), the `python -m app.rag` CLI, and any caller that doesn't ask for streaming still call the non-stream `complete_rag_answer` and get a single JSON object.
+
+For MCP with `"stream": true` (alias `rag_query_stream`), the server runs `complete_rag_answer_stream` and pushes each event **live** on the same HTTP connection as `notifications/progress` (JSON in `params.message`, same event shapes as below). The final tool result includes `{"streamed": true, "event_count": N, "events": [...]}`. Answer text uses upstream token deltas as they arrive (not 48-character replay).
 
 ## Wire format
 
@@ -48,7 +50,7 @@ The HTTP status is locked at **200** as soon as headers flush. Errors that occur
 | `latency` | `{"phase","ms"}` | Once per phase: `embed`, `retrieve`, `chunk_rerank`, `chat`, `follow_up_chat`, `follow_up_rerank`, `total`. |
 | `retrieval_widen` | `{"reason","prev_k","next_k"}` | Emitted **before** a retry when the model returned empty or exactly `NOT_FOUND` and we widen the context slice (`expand_on_not_found`). `reason` is currently always `"not_found"`. Not sent when the first chat attempt already succeeds. |
 | `answer_start` | `{}` | Immediately before the first user-visible `answer_delta` for this turn. After any `retrieval_widen` events; clients can reset their answer buffer here. |
-| `answer_delta` | `{"text":"<chunk>"}` | Only the **final** answer text, chunked (~48 UTF-8 characters per frame) for smooth rendering. Intermediate NOT_FOUND / widen attempts are **not** streamed. |
+| `answer_delta` | `{"text":"<chunk>"}` | Final-answer text from upstream streaming chat (token/text deltas). Intermediate NOT_FOUND / widen attempts are **not** streamed. |
 | `answer_end` | `{}` | After the last `answer_delta` for this turn. |
 | `citations` | `{"items":[{cite_id,chunk_id,source,text}, …]}` | After the final answer is assembled and citations are extracted. |
 | `follow_up_questions` | `{"items":["…"]}` | After follow-up generation completes. Empty list when disabled or empty. |
@@ -284,4 +286,4 @@ async def stream(question: str) -> None:
 
 ## Logging
 
-Each streamed request may emit multiple `chat_complete_stream ok …` lines — **one per upstream chat completion** (every widen attempt plus the final attempt). `ttft_ms` / `gen_ms` on each line refer to that attempt only. User-visible `answer_delta` frames are emitted **once** after all widen decisions, re-chunked from the final answer string (not raw per-token upstream frames on that leg). Everything else (`embed_text`, `query_chunks`, `rerank_texts`, `follow_up_questions_ok`, the `complete_rag_answer_stream done …` summary) matches the non-stream path.
+Each streamed request may emit multiple `chat_complete_stream ok …` lines — **one per upstream chat completion** (every widen attempt plus the final attempt). `ttft_ms` / `gen_ms` on each line refer to that attempt only. User-visible `answer_delta` frames come from upstream streaming on the **final** chat leg (widen attempts are buffered, not sent). Everything else (`embed_text`, `query_chunks`, `rerank_texts`, `follow_up_questions_ok`, the `complete_rag_answer_stream done …` summary) matches the non-stream path.

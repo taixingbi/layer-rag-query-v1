@@ -132,12 +132,12 @@ Prefer **`POST /v1/rag/query`** for plain JSON. MCP uses the same RAG logic via 
 
 **Stateless HTTP:** no `initialize` handshake and no `mcp-session-id` header — one `tools/call` per request (same correlation headers as `/v1/rag/query`).
 
-MCP responses are **SSE frames** (`event: message` + `data: {...}`). Parse `result.content[0].text` (JSON string when not streaming events; `{"events": [...]}` when streaming).
+MCP uses **SSE** (`event: message`). With `"stream": true`, RAG events arrive **live** as `notifications/progress` (parse `data: …` → `.params.message` JSON, same `type` fields as [streaming.md](streaming.md)). The last frame is the tool result (`streamed`, `events`, …). Use `curl -N` so progress lines are not buffered.
 
 ```bash
 MCP_URL=http://127.0.0.1:8000/v1/mcp
 
-curl -sS -X POST "${MCP_URL}" \
+curl -N -sS -X POST "${MCP_URL}" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -H "X-Request-Id: req-abc123" \
@@ -165,7 +165,16 @@ curl -sS -X POST "${MCP_URL}" \
   }'
 ```
 
-Optional: `sed -n 's/^data: //p' | jq -r '.result.content[0].text' | jq .` (non-stream) or `| jq -r '.events[].type'` (stream).
+**Parse live stream** (`stream: true`):
+
+```bash
+curl -N -sS ... | sed -n 's/^data: //p' | while read -r line; do
+  echo "$line" | jq -r 'select(.method=="notifications/progress") | .params.message' 2>/dev/null \
+    | jq -r 'select(.type=="answer_delta") | .text' 2>/dev/null
+done
+```
+
+Final tool JSON: `sed -n 's/^data: //p' | jq 'select(.result) | .result.content[0].text' -r | tail -1 | jq .`
 
 ## Embedding API (upstream)
 
