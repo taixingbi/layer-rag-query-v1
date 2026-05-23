@@ -42,7 +42,7 @@ Expected: Prometheus text exposition (`rag_query_http_requests_total`, `rag_quer
 
 ## Correlation headers
 
-`POST /v1/rag/query` and MCP `tools/call` read correlation IDs **only from HTTP headers** (not the JSON body). Putting `request_id`, `session_id`, or `trace_id` in the RAG JSON body returns **400**.
+`POST /v1/rag/query` and MCP `tools/call` read `X-Request-Id`, `X-Session-Id`, and `X-Trace-Id` **only from HTTP headers** (not the JSON body). Putting those fields in the RAG JSON body returns **400**. **`conversation_id` is the opposite:** JSON body (or MCP tool `arguments`) only — not a request header.
 
 | Header | Required | Notes |
 |--------|----------|-------|
@@ -65,7 +65,7 @@ Sending **no** access headers is the same as anonymous: the request asks for chu
 
 ## RAG query (`POST /v1/rag/query`)
 
-Default JSON response: `answer`, `citations`, `follow_up_questions`, `latency_ms`, `usage`, plus `request_id`, `session_id`, `trace_id`, and `conversation_id`. On **200**, ids are echoed as `X-Request-Id`, `X-Session-Id`, `X-Trace-Id` (when sent), and `X-Conversation-Id`.
+Default JSON response: `answer`, `citations`, `follow_up_questions`, `latency_ms`, `usage`, plus `request_id`, `session_id`, `trace_id`, and `conversation_id`. Set **`conversation_id` in the JSON body** (optional; omit or blank for server-generated `conv_<hex>`). Correlation ids use **headers only**; do not put `request_id` / `session_id` / `trace_id` in the body. On **200**, ids are echoed as `X-Request-Id`, `X-Session-Id`, `X-Trace-Id` (when sent), and `X-Conversation-Id`.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
@@ -79,6 +79,7 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
   -H "X-User-Teams: rag-platform" \
   -d '{
     "question": "what is taixing visa",
+    "conversation_id": "conv_rag_1",
     "collection_base": "taixing_knowledge",
     "k": 5,
     "k_max": 50
@@ -102,6 +103,7 @@ curl -N -sS -X POST http://127.0.0.1:8000/v1/rag/query \
   -H "X-User-Teams: rag-platform" \
   -d '{
     "question": "what is taixing visa",
+    "conversation_id": "conv_rag_1",
     "collection_base": "taixing_knowledge",
     "k": 5,
     "k_max": 50
@@ -151,6 +153,7 @@ curl -sS -X POST "${MCP_URL}" \
       "name": "rag_query",
       "arguments": {
         "question": "what is taixing visa status in us?",
+        "conversation_id": "conv_rag_1",
         "collection_base": "taixing_knowledge",
         "stream": true,
         "k": 5,
