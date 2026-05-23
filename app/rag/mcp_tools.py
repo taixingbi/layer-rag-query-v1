@@ -89,7 +89,6 @@ async def rag_query_non_stream(
         follow_up_questions=follow_up_questions,
         latency_ms=latency_ms,
         retrieval_hits=retrieval_hits,
-        include_retrieval_hits=wants_hits,
         request_id=request_id,
         session_id=session_id,
         trace_id=trace_id,

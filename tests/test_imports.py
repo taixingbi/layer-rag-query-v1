@@ -12,9 +12,12 @@ def test_import_public_api() -> None:
 
 
 def test_import_mcp_entry() -> None:
-    from app.main import mcp
+    import fastmcp
+    from app.main import MCP_HTTP_PATH, mcp
 
     assert mcp.name == "layer-rag-query"
+    assert MCP_HTTP_PATH == "/v1/mcp"
+    assert fastmcp.settings.streamable_http_path == "/v1/mcp"
 
 
 def test_mcp_rag_tool_names() -> None:

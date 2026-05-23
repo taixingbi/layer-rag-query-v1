@@ -136,7 +136,7 @@ fastmcp run app/main.py:mcp --transport http --host 0.0.0.0 --port 8000
 
 `-m app.main` is the module-style entrypoint. In this mode, FastMCP uses the module's own startup (`mcp.run()`), so CLI transport/host/port flags are ignored.
 
-On **HTTP** transport, **MCP** clients use `http://127.0.0.1:8000/mcp` . The same process also serves **`POST http://127.0.0.1:8000/v1/rag/query`** (JSON body; default response includes `answer`, `citations`, `follow_up_questions`, `latency_ms`, `usage`, and correlation fields `request_id`, `session_id`, `trace_id`, `conversation_id`) for plain `curl` scripts, plus liveness/readiness probes:
+On **HTTP** transport, **MCP** clients use `http://127.0.0.1:8000/v1/mcp`. The same process also serves **`POST http://127.0.0.1:8000/v1/rag/query`** (JSON body; default response includes `answer`, `citations`, `follow_up_questions`, `latency_ms`, `usage`, and correlation fields `request_id`, `session_id`, `trace_id`, `conversation_id`) for plain `curl` scripts, plus liveness/readiness probes:
 
 - `GET /health` — always `200` with `status`, `app_name`, `app_version` while the process is up (no I/O, no headers required).
 - `GET /version` — `200` with `app_name` and `app_version` (image `APP_VERSION` or package metadata).
@@ -218,7 +218,7 @@ See also [`docs/schema.md`](docs/schema.md) (request/response fields), [`docs/st
 }
 ```
 
-CLI: `fastmcp run app/main.py:mcp --transport http --host 0.0.0.0 --port 8000`
+CLI: `fastmcp run app/main.py:mcp --transport http --host 0.0.0.0 --port 8000 --path /v1/mcp` (path defaults to `/v1/mcp` when the module loads; flag is optional)
 
 ## RAG + inference (chat API)
 

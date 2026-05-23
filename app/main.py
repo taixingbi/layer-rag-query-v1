@@ -14,6 +14,7 @@ import uuid
 from typing import Any
 
 import httpx
+import fastmcp
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field, ValidationError, model_validator
 from starlette.requests import Request
@@ -28,6 +29,7 @@ from app.core.metrics import (
     observe_rag_query,
 )
 from app.core.version import APP_NAME, get_app_version
+from app.http._correlation import correlation_from_request
 from app.http.embed import embed_text as _embed_text_async
 from app.http.inference import resolve_conversation_id
 from app.http.usage import UsageTokens
@@ -35,8 +37,11 @@ from app.core.logging_config import logger
 from app.qdrant.client import create_async_client, resolve_connection_params
 from app.rag.mcp_tools import rag_query_non_stream, rag_query_stream_events
 from app.rag.rag_answer import complete_rag_answer_stream
-from app.core.request_context import bind_http_context
+from app.core.request_context import bind_http_context, bind_request_context
+from app.rag.mcp_http import resolve_mcp_rag_call
 from app.rag.retrieval import query_chunks as _query_chunks_async
+
+MCP_HTTP_PATH = "/v1/mcp"
 
 _FORBIDDEN_RAG_BODY_KEYS = frozenset({
     "request_id",
@@ -56,15 +61,6 @@ def _observe_http_request(request: Request, response: Response, started: float) 
         int(response.status_code),
         time.perf_counter() - started,
     )
-
-
-def _correlation_from_headers(request: Request) -> tuple[str, str, str | None]:
-    """Read ``X-Request-Id``, ``X-Session-Id``, ``X-Trace-Id`` (case-insensitive). Trace may be absent."""
-    rid = (request.headers.get("x-request-id") or "").strip()
-    sid = (request.headers.get("x-session-id") or "").strip()
-    tid_raw = (request.headers.get("x-trace-id") or "").strip()
-    tid: str | None = tid_raw if tid_raw else None
-    return rid, sid, tid
 
 
 def _wants_sse(request: Request) -> bool:
@@ -194,20 +190,23 @@ async def answer_from_inference_payload_async(
     )
 
 
+fastmcp.settings.streamable_http_path = MCP_HTTP_PATH
+
 mcp = FastMCP(
     "layer-rag-query",
     instructions="RAG tools: Qdrant hybrid search (dense + BM25 + RRF), embeddings, and optional "
     "full answers via INFERENCE_URL /v1/chat/completions (set in .env). "
     "Pass collection base; ENV suffix comes from .env. request_id and session_id are required for retrieval embedding calls. "
-    "Use rag_query for a single JSON answer (same shape as POST /v1/rag/query) or rag_query_stream for all SSE-shaped events.",
+    "Use rag_query for a single JSON answer (same shape as POST /v1/rag/query) or rag_query_stream for all SSE-shaped events. "
+    "On HTTP transport, pass X-Request-Id, X-Session-Id, X-Trace-Id, and X-User-* headers on each POST /v1/mcp call.",
 )
 
 def _mcp_rag_query_sync(
     *,
     question: str,
     collection_base: str,
-    request_id: str,
-    session_id: str,
+    request_id: str = "",
+    session_id: str = "",
     k: int = 5,
     k_max: int = 50,
     max_tokens: int | None = None,
@@ -227,46 +226,59 @@ def _mcp_rag_query_sync(
     trace_id: str | None = None,
     conversation_id: str | None = None,
 ) -> dict[str, Any]:
-    conv = resolve_conversation_id(conversation_id)
-    wants_hits = include_retrieval_hits or debug or trace_retrieval or return_retrieval_hits
-    return run_async(
-        rag_query_non_stream(
-            question=question,
-            collection_base=collection_base,
-            request_id=request_id,
-            session_id=session_id,
-            k=k,
-            k_max=k_max,
-            max_tokens=max_tokens,
-            expand_on_not_found=expand_on_not_found,
-            rerank_top_n=rerank_top_n,
-            rerank_return_top_k=rerank_return_top_k,
-            retrieve_fallback_n=retrieve_fallback_n,
-            final_context_top_k=final_context_top_k,
-            use_reranker=use_reranker,
-            include_follow_up_questions=include_follow_up_questions,
-            follow_up_candidates=follow_up_candidates,
-            follow_up_final=follow_up_final,
-            include_retrieval_hits=include_retrieval_hits,
-            debug=debug,
-            trace_retrieval=trace_retrieval,
-            return_retrieval_hits=return_retrieval_hits,
-            trace_id=trace_id,
-            conversation_id=conv,
-            build_payload=lambda **kw: _answer_payload(
-                **kw,
-                include_retrieval_hits=wants_hits,
-            ),
-        )
+    ctx = resolve_mcp_rag_call(
+        request_id=request_id,
+        session_id=session_id,
+        trace_id=trace_id,
+        conversation_id=conversation_id,
     )
+    wants_hits = include_retrieval_hits or debug or trace_retrieval or return_retrieval_hits
+    with bind_request_context(
+        ctx.request_id,
+        ctx.session_id,
+        trace_id=ctx.trace_id,
+        user_id=ctx.user.id,
+        conversation_id=ctx.conversation_id,
+    ):
+        return run_async(
+            rag_query_non_stream(
+                question=question,
+                collection_base=collection_base,
+                request_id=ctx.request_id,
+                session_id=ctx.session_id,
+                k=k,
+                k_max=k_max,
+                max_tokens=max_tokens,
+                expand_on_not_found=expand_on_not_found,
+                rerank_top_n=rerank_top_n,
+                rerank_return_top_k=rerank_return_top_k,
+                retrieve_fallback_n=retrieve_fallback_n,
+                final_context_top_k=final_context_top_k,
+                use_reranker=use_reranker,
+                include_follow_up_questions=include_follow_up_questions,
+                follow_up_candidates=follow_up_candidates,
+                follow_up_final=follow_up_final,
+                include_retrieval_hits=include_retrieval_hits,
+                debug=debug,
+                trace_retrieval=trace_retrieval,
+                return_retrieval_hits=return_retrieval_hits,
+                trace_id=ctx.trace_id,
+                user=ctx.user,
+                conversation_id=ctx.conversation_id,
+                build_payload=lambda **kw: _answer_payload(
+                    **kw,
+                    include_retrieval_hits=wants_hits,
+                ),
+            )
+        )
 
 
 def _mcp_rag_query_stream_sync(
     *,
     question: str,
     collection_base: str,
-    request_id: str,
-    session_id: str,
+    request_id: str = "",
+    session_id: str = "",
     k: int = 5,
     k_max: int = 50,
     max_tokens: int | None = None,
@@ -286,33 +298,46 @@ def _mcp_rag_query_stream_sync(
     trace_id: str | None = None,
     conversation_id: str | None = None,
 ) -> dict[str, Any]:
-    conv = resolve_conversation_id(conversation_id)
-    return run_async(
-        rag_query_stream_events(
-            question=question,
-            collection_base=collection_base,
-            request_id=request_id,
-            session_id=session_id,
-            k=k,
-            k_max=k_max,
-            max_tokens=max_tokens,
-            expand_on_not_found=expand_on_not_found,
-            rerank_top_n=rerank_top_n,
-            rerank_return_top_k=rerank_return_top_k,
-            retrieve_fallback_n=retrieve_fallback_n,
-            final_context_top_k=final_context_top_k,
-            use_reranker=use_reranker,
-            include_follow_up_questions=include_follow_up_questions,
-            follow_up_candidates=follow_up_candidates,
-            follow_up_final=follow_up_final,
-            include_retrieval_hits=include_retrieval_hits,
-            debug=debug,
-            trace_retrieval=trace_retrieval,
-            return_retrieval_hits=return_retrieval_hits,
-            trace_id=trace_id,
-            conversation_id=conv,
-        )
+    ctx = resolve_mcp_rag_call(
+        request_id=request_id,
+        session_id=session_id,
+        trace_id=trace_id,
+        conversation_id=conversation_id,
     )
+    with bind_request_context(
+        ctx.request_id,
+        ctx.session_id,
+        trace_id=ctx.trace_id,
+        user_id=ctx.user.id,
+        conversation_id=ctx.conversation_id,
+    ):
+        return run_async(
+            rag_query_stream_events(
+                question=question,
+                collection_base=collection_base,
+                request_id=ctx.request_id,
+                session_id=ctx.session_id,
+                k=k,
+                k_max=k_max,
+                max_tokens=max_tokens,
+                expand_on_not_found=expand_on_not_found,
+                rerank_top_n=rerank_top_n,
+                rerank_return_top_k=rerank_return_top_k,
+                retrieve_fallback_n=retrieve_fallback_n,
+                final_context_top_k=final_context_top_k,
+                use_reranker=use_reranker,
+                include_follow_up_questions=include_follow_up_questions,
+                follow_up_candidates=follow_up_candidates,
+                follow_up_final=follow_up_final,
+                include_retrieval_hits=include_retrieval_hits,
+                debug=debug,
+                trace_retrieval=trace_retrieval,
+                return_retrieval_hits=return_retrieval_hits,
+                trace_id=ctx.trace_id,
+                user=ctx.user,
+                conversation_id=ctx.conversation_id,
+            )
+        )
 
 
 @mcp.tool
@@ -349,8 +374,8 @@ def embed_text(
 def rag_query(
     question: str,
     collection_base: str,
-    request_id: str,
-    session_id: str,
+    request_id: str = "",
+    session_id: str = "",
     k: int = 5,
     k_max: int = 50,
     max_tokens: int | None = None,
@@ -370,7 +395,11 @@ def rag_query(
     trace_id: str | None = None,
     conversation_id: str | None = None,
 ) -> dict[str, Any]:
-    """Non-stream RAG answer (JSON). Same parameters and response as ``POST /v1/rag/query`` without ``stream: true``."""
+    """Non-stream RAG answer (JSON). Same parameters and response as ``POST /v1/rag/query`` without ``stream: true``.
+
+    On HTTP transport, set correlation and access headers on the MCP request (they override
+    ``request_id`` / ``session_id`` / ``trace_id`` tool arguments). See ``docs/smoke-test.md``.
+    """
     return _mcp_rag_query_sync(
         question=question,
         collection_base=collection_base,
@@ -401,8 +430,8 @@ def rag_query(
 def rag_query_stream(
     question: str,
     collection_base: str,
-    request_id: str,
-    session_id: str,
+    request_id: str = "",
+    session_id: str = "",
     k: int = 5,
     k_max: int = 50,
     max_tokens: int | None = None,
@@ -422,7 +451,11 @@ def rag_query_stream(
     trace_id: str | None = None,
     conversation_id: str | None = None,
 ) -> dict[str, Any]:
-    """Stream RAG as a list of SSE-shaped events under ``events`` (see ``docs/streaming.md``)."""
+    """Stream RAG as a list of SSE-shaped events under ``events`` (see ``docs/streaming.md``).
+
+    On HTTP transport, set correlation and access headers on the MCP request (they override
+    tool arguments). See ``docs/smoke-test.md``.
+    """
     return _mcp_rag_query_stream_sync(
         question=question,
         collection_base=collection_base,
@@ -453,8 +486,8 @@ def rag_query_stream(
 def answer_from_inference(
     question: str,
     collection_base: str,
-    request_id: str,
-    session_id: str,
+    request_id: str = "",
+    session_id: str = "",
     k: int = 5,
     k_max: int = 50,
     max_tokens: int | None = None,
@@ -551,7 +584,7 @@ async def answer_from_inference_http(request: Request) -> Response:
         )
         _observe_http_request(request, response, http_t0)
         return response
-    request_id, session_id, trace_id = _correlation_from_headers(request)
+    request_id, session_id, trace_id = correlation_from_request(request)
     if not request_id:
         request_id = str(uuid.uuid4())
     if not session_id:
@@ -777,4 +810,4 @@ async def ready(request: Request) -> JSONResponse:
 
 
 if __name__ == "__main__":
-    mcp.run()
+    mcp.run(path=MCP_HTTP_PATH)

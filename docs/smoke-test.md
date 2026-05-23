@@ -194,6 +194,139 @@ curl -N -sS -X POST http://127.0.0.1:8000/v1/rag/query \
 
 Either request expects `meta`, retrieval `latency` phases, `answer_start`, several `answer_delta` frames (final answer only; widen retries do not stream `NOT_FOUND`), `answer_end`, `citations`, `follow_up_questions`, remaining `latency` events including `total`, and `done`. If the model triggers a context widen, you will also see one or more `retrieval_widen` events before `answer_start`. `-N` disables curl's own output buffering — without it the deltas batch on stdout.
 
+## MCP over HTTP (`/v1/mcp`)
+
+For plain scripts and gateways, prefer **`POST /v1/rag/query`** above. The sections below call the same RAG logic through the **MCP Streamable HTTP** transport at `http://127.0.0.1:8000/v1/mcp` (tools `rag_query` and `rag_query_stream`).
+
+MCP responses are **SSE frames** (`event: message` + `data: {...}`), not raw JSON. Tool results arrive in `result.content[0].text` as a JSON string (non-stream) or a JSON object with an `events` array (stream tool).
+
+On **HTTP** transport, pass the same correlation and access headers as `POST /v1/rag/query` on **every** `POST /v1/mcp` call (including `tools/call`). Headers override `request_id`, `session_id`, and `trace_id` tool arguments when set. Stdio MCP (Cursor) has no HTTP headers — pass `request_id` / `session_id` in tool arguments instead.
+
+| Header | Required | Notes |
+|--------|----------|-------|
+| `X-Request-Id` | no | Overrides tool `request_id` when set. If header and tool arg are both blank, a UUID is generated. |
+| `X-Session-Id` | no | Overrides tool `session_id` when set. If header and tool arg are both blank, a UUID is generated. |
+| `X-Trace-Id` | no | Overrides tool `trace_id` when set. |
+| `X-User-Id` | no | Access control (see [access-control.md](access-control.md)). |
+| `X-User-Roles` | no | Comma-separated; default `anyuser` when absent. |
+| `X-User-Groups` | no | Comma-separated. |
+| `X-User-Teams` | no | Comma-separated. |
+
+Reusable header block for the examples below:
+
+```bash
+MCP_HDR=(
+  -H "X-Request-Id: req-mcp-1"
+  -H "X-Session-Id: ses-mcp-1"
+  -H "X-Trace-Id: trc-mcp-1"
+  -H "X-User-Id: taixing"
+  -H "X-User-Roles: hr"
+  -H "X-User-Groups: engineering"
+  -H "X-User-Teams: rag-platform"
+)
+```
+
+For `rag_query_stream`, use distinct ids (e.g. `req-mcp-stream-1`, `ses-mcp-stream-1`, `trc-mcp-stream-1`) in the same header set.
+
+### MCP session (run once per shell)
+
+Every MCP request after `initialize` must include the `mcp-session-id` response header from the handshake:
+
+```bash
+MCP_URL=http://127.0.0.1:8000/v1/mcp
+
+MCP_SESSION=$(curl -sS -D - -o /dev/null -X POST "${MCP_URL}" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "2025-03-26",
+      "capabilities": {},
+      "clientInfo": {"name": "curl-smoke", "version": "1.0"}
+    }
+  }' | awk -F': ' 'tolower($1)=="mcp-session-id" {print $2}' | tr -d '\r')
+
+curl -sS -X POST "${MCP_URL}" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "mcp-session-id: ${MCP_SESSION}" \
+  -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' > /dev/null
+```
+
+### MCP `rag_query` (non-stream)
+
+Same JSON shape as `POST /v1/rag/query` (`answer`, `citations`, `follow_up_questions`, `latency_ms`, `usage`, correlation fields). Correlation ids come from the **HTTP headers** above (echoed in the JSON body).
+
+```bash
+curl -sS -X POST "${MCP_URL}" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "mcp-session-id: ${MCP_SESSION}" \
+  "${MCP_HDR[@]}" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/call",
+    "params": {
+      "name": "rag_query",
+      "arguments": {
+        "question": "what is taixing visa status in us?",
+        "collection_base": "taixing_knowledge",
+        "k": 5,
+        "k_max": 50
+      }
+    }
+  }'
+```
+
+Optional: extract the embedded answer JSON with `jq` (requires the `data:` line from the SSE frame):
+
+```bash
+curl -sS ... | sed -n 's/^data: //p' | jq -r '.result.content[0].text' | jq .
+```
+
+### MCP `rag_query_stream` (stream events as JSON)
+
+Runs `complete_rag_answer_stream` and returns `{"events": [{"type": "meta", ...}, {"type": "answer_delta", ...}, ...]}` — same event names as HTTP SSE ([streaming.md](streaming.md)). Use `expand_on_not_found: false` for a shorter smoke run.
+
+```bash
+curl -sS -X POST "${MCP_URL}" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "mcp-session-id: ${MCP_SESSION}" \
+  -H "X-Request-Id: req-mcp-stream-1" \
+  -H "X-Session-Id: ses-mcp-stream-1" \
+  -H "X-Trace-Id: trc-mcp-stream-1" \
+  -H "X-User-Id: taixing" \
+  -H "X-User-Roles: hr" \
+  -H "X-User-Groups: engineering" \
+  -H "X-User-Teams: rag-platform" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "tools/call",
+    "params": {
+      "name": "rag_query_stream",
+      "arguments": {
+        "question": "what is taixing visa status in us?",
+        "collection_base": "taixing_knowledge",
+        "k": 5,
+        "k_max": 50,
+        "expand_on_not_found": false
+      }
+    }
+  }'
+```
+
+Optional: list event types only:
+
+```bash
+curl -sS ... | sed -n 's/^data: //p' | jq -r '.result.content[0].text' | jq -r '.events[].type'
+```
+
 ## RAG query — error cases
 
 ```bash
@@ -291,7 +424,8 @@ curl -sS "${QDRANT_URL}/collections/taixing_knowledge_${ENV}" \
 | Readiness (probes Qdrant) | `GET` | `http://127.0.0.1:8000/ready` |
 | RAG answer (JSON) | `POST` | `http://127.0.0.1:8000/v1/rag/query` |
 | RAG answer (SSE) | `POST` | `http://127.0.0.1:8000/v1/rag/query` (with `Accept: text/event-stream` or `"stream": true` in body) |
-| MCP transport | (MCP) | `http://127.0.0.1:8000/mcp` |
+| MCP `rag_query` (non-stream) | `POST` | `http://127.0.0.1:8000/v1/mcp` (`tools/call` → `rag_query`) |
+| MCP `rag_query_stream` | `POST` | `http://127.0.0.1:8000/v1/mcp` (`tools/call` → `rag_query_stream`) |
 | Embedding (upstream) | `POST` | `${EMBEDDING_URL}/v1/embeddings` |
 | Chat (upstream) | `POST` | `${INFERENCE_URL}/v1/chat/completions` |
 | Rerank (upstream) | `POST` | `${RERANK_URL}/v1/rerank` |

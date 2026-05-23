@@ -1,6 +1,20 @@
 """Shared correlation HTTP headers for upstream API calls (embed / rerank / chat)."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from starlette.requests import Request
+
+
+def correlation_from_request(request: Request) -> tuple[str, str, str | None]:
+    """Read ``X-Request-Id``, ``X-Session-Id``, ``X-Trace-Id`` (case-insensitive). Trace may be absent."""
+    rid = (request.headers.get("x-request-id") or "").strip()
+    sid = (request.headers.get("x-session-id") or "").strip()
+    tid_raw = (request.headers.get("x-trace-id") or "").strip()
+    tid: str | None = tid_raw if tid_raw else None
+    return rid, sid, tid
+
 
 def correlation_headers(
     request_id: str,
