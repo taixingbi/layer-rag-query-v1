@@ -20,8 +20,8 @@ All values are non-negative integers (wall time from `time.perf_counter()`).
 | Key | Meaning |
 |-----|---------|
 | `total` | End-to-end wall time for `complete_rag_answer`. |
-| `github_readme` | Query embedding HTTP call. |
-| `github_search` | Hybrid `query_chunks` + passage rerank (combined). |
+| `embed` | Query embedding HTTP call. |
+| `retrieve_rerank` | Hybrid `query_chunks` + passage rerank (combined). |
 | `chat` | Sum of all main RAG `chat_complete` calls (including widen retries). |
 | `follow_up_chat` | Follow-up candidate generation + rerank (combined); `0` if follow-ups disabled. |
 

@@ -50,9 +50,9 @@ from app.http.inference import (
 )
 from app.rag.latency import (
     LATENCY_CHAT,
+    LATENCY_EMBED,
     LATENCY_FOLLOW_UP_CHAT,
-    LATENCY_GITHUB_README,
-    LATENCY_GITHUB_SEARCH,
+    LATENCY_RETRIEVE_RERANK,
     LATENCY_TOTAL,
     build_latency_ms,
 )
@@ -495,7 +495,7 @@ async def complete_rag_answer(
     Returns ``(answer, citations, follow_up_questions, latency_ms, retrieval_hits, usage)`` where ``citations`` lists only passages the model
     referenced with ``[n]`` in ``answer`` (each item: ``cite_id``, ``chunk_id``, ``source``, ``text``).
     ``follow_up_questions`` is empty when disabled or on failure; otherwise up to ``follow_up_final`` strings.
-    ``latency_ms`` uses stable phase keys (``github_readme``, ``github_search``, ``chat``,
+    ``latency_ms`` uses stable phase keys (``embed``, ``retrieve_rerank``, ``chat``,
     ``follow_up_chat``, ``total``; see :mod:`app.rag.latency`).
     ``usage`` holds ``chat``, ``follow_up_chat``, and ``total`` token counts.
     ``retrieval_hits`` is empty unless ``include_retrieval_hits`` is true; then each item has
@@ -687,7 +687,7 @@ async def complete_rag_answer_stream(
     """Streaming sibling of :func:`complete_rag_answer`. Yields event dicts (each carries
     a ``type`` key naming the SSE event) in this order on a happy path:
 
-      ``meta`` → ``latency(github_readme)`` → ``latency(github_search)`` →
+      ``meta`` → ``latency(embed)`` → ``latency(retrieve_rerank)`` →
       zero or more ``retrieval_widen`` → ``answer_start`` → many ``answer_delta`` →
       ``answer_end`` → ``latency(chat)`` → ``citations`` →
       ``follow_up_questions`` → ``latency(follow_up_chat)`` → ``latency(total)`` → ``done``
@@ -744,12 +744,12 @@ async def complete_rag_answer_stream(
         }
         yield {
             "type": "latency",
-            "phase": LATENCY_GITHUB_README,
+            "phase": LATENCY_EMBED,
             "ms": prep.embed_ms,
         }
         yield {
             "type": "latency",
-            "phase": LATENCY_GITHUB_SEARCH,
+            "phase": LATENCY_RETRIEVE_RERANK,
             "ms": prep.retrieve_ms + prep.chunk_rerank_ms,
         }
 
