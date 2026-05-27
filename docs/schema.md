@@ -8,13 +8,13 @@ Contract reference for **layer-rag-query** HTTP routes. Implementation: [`app/ma
 
 | Method | Path | Response | Purpose |
 |--------|------|----------|---------|
-| `POST` | `/v1/rag/query` | `application/json` (default) or `text/event-stream` | Full RAG answer |
+| `POST` | `/v1/rag/query` | `text/event-stream` (default) or `application/json` | Full RAG answer |
 | `GET` | `/health` | JSON | Liveness |
 | `GET` | `/version` | JSON | Build identity |
 | `GET` | `/ready` | JSON | Readiness (Qdrant reachable) |
 | `GET` | `/metrics` | Prometheus text | HTTP + RAG metrics |
 
-MCP tool `rag_query` uses the same RAG logic with a `stream` argument (`false` → JSON body below; `true` → `{"events": [...]}` per [streaming.md](streaming.md)). Aliases `answer_from_inference` / `rag_query_stream` remain for compatibility. This document covers **HTTP only**.
+MCP tool `rag_query` uses the same RAG logic with a `stream` argument (`true` default → `{"events": [...]}` per [streaming.md](streaming.md); set `false` for JSON mode). Aliases `answer_from_inference` / `rag_query_stream` remain for compatibility. This document covers **HTTP only**.
 
 ---
 
@@ -50,7 +50,7 @@ Semantics: [access-control.md](access-control.md).
 
 | Header | Required | Notes |
 |--------|----------|-------|
-| `Accept` | no | Include `text/event-stream` to request SSE (OR with body `"stream": true`). |
+| `Accept` | no | Include `text/event-stream` to force SSE. |
 
 Query-param streaming (`?stream=1`) is **not** supported.
 
@@ -76,7 +76,7 @@ Query-param streaming (`?stream=1`) is **not** supported.
 | `debug` | no | boolean | `false` | Alias for `include_retrieval_hits`. |
 | `trace_retrieval` | no | boolean | `false` | Alias for `include_retrieval_hits`. |
 | `return_retrieval_hits` | no | boolean | `false` | Alias for `include_retrieval_hits`. |
-| `stream` | no | boolean | `false` | `true` → SSE (OR with `Accept: text/event-stream`). |
+| `stream` | no | boolean | `true` | `false` → JSON. `Accept: text/event-stream` also forces SSE. |
 | `conversation_id` | no | string \| null | server-generated | Thread id for upstream chat/embed/rerank. Blank / omitted → `conv_<hex>`. |
 
 #### Example request
@@ -95,7 +95,7 @@ Query-param streaming (`?stream=1`) is **not** supported.
 
 ## JSON response (`200 application/json`)
 
-Default mode. Correlation ids appear in the **body** and are echoed as response headers.
+Non-stream mode (`"stream": false`). Correlation ids appear in the **body** and are echoed as response headers.
 
 ### Response headers (`200`)
 
@@ -234,7 +234,7 @@ Errors **before** the SSE stream opens return normal JSON with an HTTP status. T
 
 ## SSE response (`200 text/event-stream`)
 
-Opt-in via `Accept: text/event-stream` **or** `"stream": true`. Wire format and event order: [streaming.md](streaming.md).
+Default mode (`"stream": true` or omitted), or forced by `Accept: text/event-stream`. Wire format and event order: [streaming.md](streaming.md).
 
 ### Response headers (`200`)
 

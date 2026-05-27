@@ -102,7 +102,7 @@ class AnswerFromInferenceBody(BaseModel):
     debug: bool = False
     trace_retrieval: bool = False
     return_retrieval_hits: bool = False
-    stream: bool = False
+    stream: bool = True
     conversation_id: str | None = None
 
     @model_validator(mode="after")
@@ -203,7 +203,7 @@ mcp = FastMCP(
     instructions="RAG tools: Qdrant hybrid search (dense + BM25 + RRF), embeddings, and optional "
     "full answers via INFERENCE_URL /v1/chat/completions (set in .env). "
     "Pass collection base; ENV suffix comes from .env. request_id and session_id are required for retrieval embedding calls. "
-    "Use rag_query with stream=false for a single JSON answer (same shape as POST /v1/rag/query) or stream=true for live RAG events "
+    "Use rag_query with stream=true for live RAG events by default; set stream=false for a single JSON answer (same shape as POST /v1/rag/query). "
     "(MCP progress notifications + final {\"events\": [...]}; upstream answer tokens stream as they are generated). "
     "On HTTP transport, pass X-Request-Id, X-Session-Id, X-Trace-Id, and X-User-* headers on each POST /v1/mcp call.",
 )
@@ -215,7 +215,7 @@ async def _mcp_rag_query_impl(
     collection_base: str,
     request_id: str = "",
     session_id: str = "",
-    stream: bool = False,
+    stream: bool = True,
     k: int = 5,
     k_max: int = 50,
     max_tokens: int | None = None,
@@ -321,7 +321,7 @@ async def rag_query(
     collection_base: str,
     request_id: str = "",
     session_id: str = "",
-    stream: bool = False,
+    stream: bool = True,
     k: int = 5,
     k_max: int = 50,
     max_tokens: int | None = None,
@@ -344,9 +344,9 @@ async def rag_query(
 ) -> dict[str, Any]:
     """RAG answer via MCP. Same parameters as ``POST /v1/rag/query``.
 
-    Set ``stream=false`` (default) for one JSON object (``answer``, ``citations``, …).
-    Set ``stream=true`` for live RAG events over MCP progress notifications (see ``docs/streaming.md``),
+    Default is ``stream=true`` for live RAG events over MCP progress notifications (see ``docs/streaming.md``),
     plus a final ``{"streamed": true, "events": [...]}`` tool result.
+    Set ``stream=false`` for one JSON object (``answer``, ``citations``, …).
 
     On HTTP transport, set correlation and access headers on the MCP request (they override
     ``request_id`` / ``session_id`` / ``trace_id`` tool arguments). See ``docs/smoke-test.md``.
@@ -502,9 +502,9 @@ async def answer_from_inference_http(request: Request) -> Response:
     ``access.roles=["anyuser"]`` are the public set. ``admin`` role bypasses filtering.
     These four fields must NOT appear in the JSON body (400). See ``docs/access-control.md``.
 
-    Default behavior is single-shot ``application/json``. Streaming is opt-in via
-    either an ``Accept: text/event-stream`` request header or ``"stream": true`` in
-    the JSON body (the two are OR-ed). See ``docs/streaming.md`` for the event
+    Default behavior is streaming when the JSON body omits ``stream`` (``"stream": true`` by default).
+    Set ``"stream": false`` for single-shot ``application/json``. ``Accept: text/event-stream``
+    also forces streaming. See ``docs/streaming.md`` for the event
     sequence and error semantics.
 
     Optional JSON field ``conversation_id`` threads the chat turn through the inference

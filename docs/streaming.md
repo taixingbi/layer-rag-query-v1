@@ -2,17 +2,13 @@
 
 `POST /v1/rag/query` supports two response modes:
 
-- **Default** — single-shot `application/json`, exactly as documented in [smoke-tests.md](smoke-tests.md). Use this for batch / non-interactive callers.
-- **Streaming** — Server-Sent Events (`text/event-stream`). Use this when you want to render answer tokens as they arrive (chat UIs, voice, anything user-facing).
+- **Default** — Streaming Server-Sent Events (`text/event-stream`). Use this when you want to render answer tokens as they arrive (chat UIs, voice, anything user-facing).
+- **Non-stream** — single-shot `application/json` when you set `"stream": false`, exactly as documented in [smoke-tests.md](smoke-tests.md). Use this for batch / non-interactive callers.
 
-Streaming is opt-in. Trigger it by **either** of:
+Streaming is the default. It is enabled when `"stream"` is omitted or true, and can also be forced with `Accept: text/event-stream`.
+Set `"stream": false` in the JSON body to force single-shot JSON. Query-param triggers (`?stream=1`) are intentionally not supported.
 
-- `Accept: text/event-stream` request header, or
-- `"stream": true` in the JSON body.
-
-If both are present they're OR-ed (any single trigger wins). Anything else falls back to JSON. Query-param triggers (`?stream=1`) are intentionally not supported — keep streaming opt-in via header or body so URLs stay clean.
-
-The MCP tool `rag_query` with `"stream": false` (alias `answer_from_inference`), the `python -m app.rag` CLI, and any caller that doesn't ask for streaming still call the non-stream `complete_rag_answer` and get a single JSON object.
+The MCP tool `rag_query` with `"stream": false` (alias `answer_from_inference`), and the `python -m app.rag` CLI call the non-stream `complete_rag_answer` and get a single JSON object.
 
 For MCP with `"stream": true` (alias `rag_query_stream`), the server runs `complete_rag_answer_stream` and pushes each event **live** on the same HTTP connection as `notifications/progress` (JSON in `params.message`, same event shapes as below). The final tool result includes `{"streamed": true, "event_count": N, "events": [...]}`. Answer text uses upstream token deltas as they arrive (not 48-character replay).
 

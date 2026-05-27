@@ -126,7 +126,7 @@ asyncio.run(main())
 
 ## MCP (FastMCP)
 
-Optional [FastMCP](https://gofastmcp.com) server over **stdio** (e.g. Cursor): tools `retrieve_chunks`, `embed_text`, and `rag_query` (`stream: false` → JSON like `POST /v1/rag/query`; `stream: true` → `{"events": [...]}`). Aliases: `answer_from_inference` (`stream: false`), `rag_query_stream` (`stream: true`).
+Optional [FastMCP](https://gofastmcp.com) server over **stdio** (e.g. Cursor): tools `retrieve_chunks`, `embed_text`, and `rag_query` (`stream: true` default → `{"events": [...]}`; set `stream: false` for JSON like `POST /v1/rag/query`). Aliases: `answer_from_inference` (`stream: false`), `rag_query_stream` (`stream: true`).
 
 ```bash
 uv pip install -e ".[mcp]"
@@ -187,7 +187,7 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
 
 **Optional `retrieval_hits` (eval / debug):** If any of these booleans is true, the response also includes `retrieval_hits`: `include_retrieval_hits`, `debug`, `trace_retrieval`, `return_retrieval_hits`. Each hit is a small object (no passage text): `stage` (`retrieve` = RRF order after hybrid fusion, `rerank` = cross-encoder order when reranking ran), `rank` (1-based within that stage), `chunk_id`, `source`, `score`. Scores are not comparable across stages (retrieve uses RRF; rerank uses the rerank API).
 
-**Streaming (SSE).** For chat-style UIs, opt in via `Accept: text/event-stream` or `"stream": true` in the JSON body (query-param triggers like `?stream=1` are not supported). The stream is `text/event-stream`: `meta` and early `latency` phases, then optional `retrieval_widen` events (context slice retry after `NOT_FOUND` / empty — **no** streamed `NOT_FOUND` text), then `answer_start` and `answer_delta` chunks for the **final** answer only, `answer_end`, `citations`, `follow_up_questions`, `usage`, remaining `latency` lines (including `total` wall time), and `done`. Errors after the first frame use `event: error` then `event: done`. Response headers match JSON mode plus `Cache-Control: no-cache` and `X-Accel-Buffering: no`. **Pause / Stop from the UI** = abort the `fetch` (use `AbortController`); the server cancels the upstream chat completion automatically and frees the GPU slot. Details and a JS / `httpx` cancel example: [`docs/streaming.md`](docs/streaming.md).
+**Streaming (SSE).** For chat-style UIs, streaming is the default (`"stream": true` when omitted). `Accept: text/event-stream` also forces SSE, and set `"stream": false` for non-stream JSON (query-param triggers like `?stream=1` are not supported). The stream is `text/event-stream`: `meta` and early `latency` phases, then optional `retrieval_widen` events (context slice retry after `NOT_FOUND` / empty — **no** streamed `NOT_FOUND` text), then `answer_start` and `answer_delta` chunks for the **final** answer only, `answer_end`, `citations`, `follow_up_questions`, `usage`, remaining `latency` lines (including `total` wall time), and `done`. Errors after the first frame use `event: error` then `event: done`. Response headers match JSON mode plus `Cache-Control: no-cache` and `X-Accel-Buffering: no`. **Pause / Stop from the UI** = abort the `fetch` (use `AbortController`); the server cancels the upstream chat completion automatically and frees the GPU slot. Details and a JS / `httpx` cancel example: [`docs/streaming.md`](docs/streaming.md).
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \

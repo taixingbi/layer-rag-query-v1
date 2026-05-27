@@ -65,7 +65,7 @@ Sending **no** access headers is the same as anonymous: the request asks for chu
 
 ## RAG query (`POST /v1/rag/query`)
 
-Default JSON response: `answer`, `citations`, `follow_up_questions`, `latency_ms`, `usage`, plus `request_id`, `session_id`, `trace_id`, and `conversation_id`. Set **`conversation_id` in the JSON body** (optional; omit or blank for server-generated `conv_<hex>`). Correlation ids use **headers only**; do not put `request_id` / `session_id` / `trace_id` in the body. On **200**, ids are echoed as `X-Request-Id`, `X-Session-Id`, `X-Trace-Id` (when sent), and `X-Conversation-Id`.
+Default response is SSE streaming. Set `"stream": false` for JSON response (`answer`, `citations`, `follow_up_questions`, `latency_ms`, `usage`, plus `request_id`, `session_id`, `trace_id`, and `conversation_id`). Set **`conversation_id` in the JSON body** (optional; omit or blank for server-generated `conv_<hex>`). Correlation ids use **headers only**; do not put `request_id` / `session_id` / `trace_id` in the body. On **200**, ids are echoed as `X-Request-Id`, `X-Session-Id`, `X-Trace-Id` (when sent), and `X-Conversation-Id`.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
@@ -81,6 +81,7 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
     "question": "what is taixing visa",
     "conversation_id": "conv_rag_1",
     "collection_base": "taixing_knowledge",
+    "stream": false,
     "k": 5,
     "k_max": 50
   }'
@@ -88,7 +89,7 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
 
 **Tune follow-ups:** add `"follow_up_candidates": 10` and `"follow_up_final": 5` to the JSON (`follow_up_final` must be ≤ `follow_up_candidates`, else **422**).
 
-**Streaming (SSE):** add `-H "Accept: text/event-stream"` (or `"stream": true` in the body instead). Use `curl -N`. See [streaming.md](streaming.md). Expect `meta`, `latency` phases, `answer_delta` frames, `citations`, `follow_up_questions`, `done`.
+**Streaming (SSE):** default when `"stream"` is omitted or true. You can also add `-H "Accept: text/event-stream"`. Use `curl -N`. See [streaming.md](streaming.md). Expect `meta`, `latency` phases, `answer_delta` frames, `citations`, `follow_up_questions`, `done`.
 
 ```bash
 curl -N -sS -X POST http://127.0.0.1:8000/v1/rag/query \
