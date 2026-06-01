@@ -52,6 +52,7 @@ async def rag_query_non_stream(
     user: RagUser | None = None,
     conversation_id: str,
     build_payload,
+    is_new_conversation: bool = False,
 ) -> dict[str, Any]:
     """Run :func:`complete_rag_answer` and return the HTTP-shaped JSON body."""
     if follow_up_final > follow_up_candidates:
@@ -86,6 +87,7 @@ async def rag_query_non_stream(
             trace_id=trace_id,
             user=user,
             conversation_id=conversation_id,
+            is_new_conversation=is_new_conversation,
         )
     )
     payload = build_payload(

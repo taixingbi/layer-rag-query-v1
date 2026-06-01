@@ -487,6 +487,7 @@ async def complete_rag_answer(
     trace_id: str | None = None,
     user: RagUser | None = None,
     conversation_id: str | None = None,
+    is_new_conversation: bool = False,
 ) -> tuple[str, list[dict], list[str], dict[str, int], list[dict], dict[str, UsageTokens]]:
     """
     ``query_chunks`` → numbered context → ``POST .../v1/chat/completions``.
@@ -518,6 +519,7 @@ async def complete_rag_answer(
         trace_id=trace_id,
         user_id=user.id if user else None,
         conversation_id=conv,
+        is_new_conversation=is_new_conversation,
     ):
         wall_t0 = time.perf_counter()
         prep = await _rag_prepare(
@@ -683,6 +685,7 @@ async def complete_rag_answer_stream(
     trace_id: str | None = None,
     user: RagUser | None = None,
     conversation_id: str | None = None,
+    is_new_conversation: bool = False,
 ) -> AsyncIterator[dict[str, Any]]:
     """Streaming sibling of :func:`complete_rag_answer`. Yields event dicts (each carries
     a ``type`` key naming the SSE event) in this order on a happy path:
@@ -708,6 +711,7 @@ async def complete_rag_answer_stream(
         trace_id=trace_id,
         user_id=user.id if user else None,
         conversation_id=conv,
+        is_new_conversation=is_new_conversation,
     ):
         wall_t0 = time.perf_counter()
         prep = await _rag_prepare(

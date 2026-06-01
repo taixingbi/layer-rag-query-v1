@@ -9,6 +9,7 @@ _session_id_ctx: ContextVar[str] = ContextVar("session_id", default="-")
 _trace_id_ctx: ContextVar[str] = ContextVar("trace_id", default="-")
 _user_id_ctx: ContextVar[str] = ContextVar("user_id", default="-")
 _conversation_id_ctx: ContextVar[str] = ContextVar("conversation_id", default="-")
+_is_new_conversation_ctx: ContextVar[bool | None] = ContextVar("is_new_conversation", default=None)
 _http_method_ctx: ContextVar[str] = ContextVar("http_method", default="-")
 _http_path_ctx: ContextVar[str] = ContextVar("http_path", default="-")
 _http_status_ctx: ContextVar[str] = ContextVar("http_status", default="-")
@@ -34,6 +35,16 @@ def get_conversation_id() -> str:
     return _conversation_id_ctx.get()
 
 
+def get_is_new_conversation_log() -> str:
+    """``true`` / ``false`` / ``-`` for JSON logs."""
+    v = _is_new_conversation_ctx.get()
+    if v is True:
+        return "true"
+    if v is False:
+        return "false"
+    return "-"
+
+
 def get_http_method() -> str:
     return _http_method_ctx.get()
 
@@ -54,6 +65,7 @@ def bind_request_context(
     trace_id: str | None = None,
     user_id: str | None = None,
     conversation_id: str | None = None,
+    is_new_conversation: bool | None = None,
 ):
     """Bind trace + identity ids for the current call (embedding / retrieval / RAG).
 
@@ -76,6 +88,7 @@ def bind_request_context(
     t_tid = _trace_id_ctx.set(tid)
     t_uid = _user_id_ctx.set(uid)
     t_cid = _conversation_id_ctx.set(cid)
+    t_new = _is_new_conversation_ctx.set(is_new_conversation)
     try:
         yield
     finally:
@@ -84,6 +97,7 @@ def bind_request_context(
         _trace_id_ctx.reset(t_tid)
         _user_id_ctx.reset(t_uid)
         _conversation_id_ctx.reset(t_cid)
+        _is_new_conversation_ctx.reset(t_new)
 
 
 @contextmanager

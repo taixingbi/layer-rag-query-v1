@@ -44,7 +44,7 @@ Expected: Prometheus text exposition (`rag_query_http_requests_total`, `rag_quer
 
 `POST /v1/rag/query` and MCP `tools/call` read `X-Request-Id`, `X-Session-Id`, and `X-Trace-Id` **only from HTTP headers** (not the JSON body). Putting those fields in the RAG JSON body returns **400**.
 
-**`conversation_id`:** Primary input is the JSON body (or MCP `arguments`). Upstream callers (e.g. **layer-orchestrator-v1**) may also send **`X-Conversation-Id`** and **`X-Is-New-Conversation`**; when the body field is omitted or blank, the service uses the header value if present, then may mint `conv_<hex>`. Responses echo **`X-Conversation-Id`** and include `conversation_id` in JSON/SSE.
+**`conversation_id`:** Primary input is the JSON body (or MCP `arguments`). Upstream callers (e.g. **layer-orchestrator-v1**) may also send **`X-Conversation-Id`** and **`X-Is-New-Conversation`**; when the body field is omitted or blank, the service uses the header value if present, then may mint `conv_<hex>`. The service **reads** `X-Is-New-Conversation` for logs (`is_new_conversation` in stderr JSON) and echoes both headers on **200** responses.
 
 | Header | Required | Notes |
 |--------|----------|-------|

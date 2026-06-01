@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 
 from .request_context import (
     get_conversation_id,
+    get_is_new_conversation_log,
     get_http_method,
     get_http_path,
     get_http_status,
@@ -70,13 +71,14 @@ class _RequestContextFilter(logging.Filter):
         # Outside request context, ids default to "-".
         # When request_id is missing, keep session_id as "-" in logs (no partial correlation).
         record.request_id = "-" if rid == "-" else rid
-        record.session_id = "-" if rid == "-" else sid
+        record.session_id = sid if sid != "-" else "-"
         tid = get_trace_id()
         record.trace_id = tid if tid != "-" else "-"
         uid = get_user_id()
         record.user_id = uid if uid else "-"
         conv = get_conversation_id()
         record.conversation_id = conv if conv else "-"
+        record.is_new_conversation = get_is_new_conversation_log()
         record.method = get_http_method()
         record.path = get_http_path()
         # ASGI response.start runs after the route returns; logs inside the route
@@ -102,6 +104,7 @@ class _JsonFormatter(logging.Formatter):
             "trace_id": getattr(record, "trace_id", "-"),
             "user_id": getattr(record, "user_id", "-"),
             "conversation_id": getattr(record, "conversation_id", "-"),
+            "is_new_conversation": getattr(record, "is_new_conversation", "-"),
             "method": getattr(record, "method", "-"),
             "path": getattr(record, "path", "-"),
             "status": getattr(record, "status", "-"),

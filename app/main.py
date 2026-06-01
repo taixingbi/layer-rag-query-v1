@@ -32,7 +32,7 @@ from app.core.metrics import (
 from app.core.version import APP_NAME, get_app_version
 from app.http._correlation import correlation_from_request
 from app.http.embed import embed_text as _embed_text_async
-from app.http.inference import resolve_conversation_id
+from app.http._conversation_headers import resolve_thread_from_request
 from app.http.usage import UsageTokens
 from app.core.logging_config import logger
 from app.qdrant.client import create_async_client, resolve_connection_params
@@ -160,6 +160,7 @@ async def answer_from_inference_payload_async(
     trace_id: str | None = None,
     user: RagUser | None = None,
     conversation_id: str,
+    is_new_conversation: bool = False,
 ) -> dict[str, Any]:
     """Run RAG + chat (async). Raise ``ValueError`` or ``httpx.HTTPStatusError`` on failure."""
     wants_hits = body.wants_retrieval_hits()
@@ -187,6 +188,7 @@ async def answer_from_inference_payload_async(
         trace_id=trace_id,
         user=user,
         conversation_id=conversation_id,
+        is_new_conversation=is_new_conversation,
         build_payload=lambda **kw: _answer_payload(
             **kw,
             include_retrieval_hits=wants_hits,
@@ -552,8 +554,9 @@ async def answer_from_inference_http(request: Request) -> Response:
         _observe_http_request(request, response, http_t0)
         return response
 
-    header_cid = (request.headers.get("x-conversation-id") or "").strip()
-    conversation_id = resolve_conversation_id(body.conversation_id or header_cid or None)
+    conversation_id, is_new_conversation = resolve_thread_from_request(
+        request, body.conversation_id
+    )
 
     if _wants_sse(request) or body.stream:
         stream_latency_ms: dict[str, int] = {}
@@ -585,6 +588,7 @@ async def answer_from_inference_http(request: Request) -> Response:
                         trace_id=trace_id,
                         user=user,
                         conversation_id=conversation_id,
+                        is_new_conversation=is_new_conversation,
                     ):
                         ev_name = ev.pop("type")
                         if ev_name == "latency":
@@ -634,6 +638,7 @@ async def answer_from_inference_http(request: Request) -> Response:
             "X-Session-Id": session_id,
             "X-User-Id": user.id,
             "X-Conversation-Id": conversation_id,
+            "X-Is-New-Conversation": "true" if is_new_conversation else "false",
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
         }
@@ -657,6 +662,7 @@ async def answer_from_inference_http(request: Request) -> Response:
                 trace_id=trace_id,
                 user=user,
                 conversation_id=conversation_id,
+                is_new_conversation=is_new_conversation,
             )
     except ValueError as e:
         response = JSONResponse({"detail": str(e)}, status_code=400)
@@ -674,6 +680,7 @@ async def answer_from_inference_http(request: Request) -> Response:
         "X-Session-Id": session_id,
         "X-User-Id": user.id,
         "X-Conversation-Id": conversation_id,
+        "X-Is-New-Conversation": "true" if is_new_conversation else "false",
     }
     if trace_id:
         hdrs["X-Trace-Id"] = trace_id
