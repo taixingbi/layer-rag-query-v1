@@ -77,7 +77,7 @@ Query-param streaming (`?stream=1`) is **not** supported.
 | `trace_retrieval` | no | boolean | `false` | Alias for `include_retrieval_hits`. |
 | `return_retrieval_hits` | no | boolean | `false` | Alias for `include_retrieval_hits`. |
 | `stream` | no | boolean | `true` | `false` → JSON. `Accept: text/event-stream` also forces SSE. |
-| `conversation_id` | no | string \| null | server-generated | Thread id for upstream chat/embed/rerank. Blank / omitted → `conv_<hex>`. |
+| `conversation_id` | no | string \| null | server-generated | Thread id for upstream chat/embed/rerank. Blank / omitted → use `X-Conversation-Id` header if set, else `conv_<hex>`. |
 
 #### Example request
 

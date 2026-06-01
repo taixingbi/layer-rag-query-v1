@@ -552,7 +552,8 @@ async def answer_from_inference_http(request: Request) -> Response:
         _observe_http_request(request, response, http_t0)
         return response
 
-    conversation_id = resolve_conversation_id(body.conversation_id)
+    header_cid = (request.headers.get("x-conversation-id") or "").strip()
+    conversation_id = resolve_conversation_id(body.conversation_id or header_cid or None)
 
     if _wants_sse(request) or body.stream:
         stream_latency_ms: dict[str, int] = {}

@@ -42,12 +42,14 @@ Expected: Prometheus text exposition (`rag_query_http_requests_total`, `rag_quer
 
 ## Correlation headers
 
-`POST /v1/rag/query` and MCP `tools/call` read `X-Request-Id`, `X-Session-Id`, and `X-Trace-Id` **only from HTTP headers** (not the JSON body). Putting those fields in the RAG JSON body returns **400**. **`conversation_id` is the opposite:** JSON body (or MCP tool `arguments`) only — not a request header.
+`POST /v1/rag/query` and MCP `tools/call` read `X-Request-Id`, `X-Session-Id`, and `X-Trace-Id` **only from HTTP headers** (not the JSON body). Putting those fields in the RAG JSON body returns **400**.
+
+**`conversation_id`:** Primary input is the JSON body (or MCP `arguments`). Upstream callers (e.g. **layer-orchestrator-v1**) may also send **`X-Conversation-Id`** and **`X-Is-New-Conversation`**; when the body field is omitted or blank, the service uses the header value if present, then may mint `conv_<hex>`. Responses echo **`X-Conversation-Id`** and include `conversation_id` in JSON/SSE.
 
 | Header | Required | Notes |
 |--------|----------|-------|
 | `X-Request-Id` | no | If missing or blank, the server generates a UUID for this call. Forwarded to the embedding API; appears as `request_id` in stderr JSON logs. |
-| `X-Session-Id` | no | If missing or blank, the server generates a UUID for this call. Forwarded to the embedding API; appears as `session_id` in stderr JSON logs. |
+| `X-Session-Id` | no | If missing or blank, the server generates a UUID **for this HTTP request**. Multi-turn clients must send the **same** `X-Session-Id` on every turn; otherwise logs and downstream correlation split across sessions. |
 | `X-Trace-Id` | no | When set, forwarded to embedding API as `X-Trace-Id` and appears as `trace_id` in stderr JSON logs (else `"-"`). Not auto-generated. |
 
 ## Access-control headers
