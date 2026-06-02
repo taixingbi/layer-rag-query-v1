@@ -718,13 +718,7 @@ async def health(request: Request) -> JSONResponse:
     """Liveness: always 200 while the process is up."""
     http_t0 = time.perf_counter()
     with bind_http_context(request.method, request.url.path, status="200"):
-        response = JSONResponse(
-            {
-                "status": "ok",
-                "app_name": APP_NAME,
-                "app_version": get_app_version(),
-            }
-        )
+        response = JSONResponse({"status": "ok"})
     _observe_http_request(request, response, http_t0)
     return response
 
