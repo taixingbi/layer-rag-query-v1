@@ -691,15 +691,12 @@ async def answer_from_inference_http(request: Request) -> Response:
 
 @mcp.custom_route("/version", methods=["GET"], include_in_schema=False)
 async def version(request: Request) -> JSONResponse:
-    """Build identity for probes and dashboards."""
+    """Build identity for probes and dashboards (no dependency checks)."""
+    from app.build_info import version_payload
+
     http_t0 = time.perf_counter()
     with bind_http_context(request.method, request.url.path, status="200"):
-        response = JSONResponse(
-            {
-                "app_name": APP_NAME,
-                "app_version": get_app_version(),
-            }
-        )
+        response = JSONResponse(version_payload())
     _observe_http_request(request, response, http_t0)
     return response
 
