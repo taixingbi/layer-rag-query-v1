@@ -121,7 +121,6 @@ jobs:
           set -euo pipefail
           bash scripts/pin-gitops-image.sh \
             manifests/rag/overlays/dev/kustomization.yaml \
-            manifests/rag/layer-rag-query-dev.yaml \
             "${IMAGE}" "${TAG}" "${DIGEST}"
 
       - name: Commit and push
@@ -129,13 +128,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TARGET_MODE="$(sed -n '1p' .gitops-target-mode)"
           SHORT_DIGEST="${{ needs.push.outputs.digest }}"
           SHORT_DIGEST="${SHORT_DIGEST#sha256:}"
           SHORT_DIGEST="${SHORT_DIGEST:0:12}"
-          if [ "${TARGET_MODE}" = "legacy" ]; then
-            export COMMIT_MSG="chore(rag-query-dev): pin legacy image ${{ needs.push.outputs.version }} @ ${SHORT_DIGEST}"
-          else
-            export COMMIT_MSG="chore(rag-query-dev): pin image ${{ needs.push.outputs.version }} @ ${SHORT_DIGEST}"
-          fi
-          bash scripts/gitops-commit-push.sh
+          export COMMIT_MSG="chore(rag-query-dev): pin image ${{ needs.push.outputs.version }} @ ${SHORT_DIGEST}"
+          bash scripts/gitops-commit-push.sh manifests/rag/overlays/dev/kustomization.yaml
