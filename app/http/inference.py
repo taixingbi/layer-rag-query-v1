@@ -62,6 +62,7 @@ async def chat_complete(
         "model": model,
         "messages": messages,
         "max_tokens": max_tokens,
+        "stream": False,
     }
     cid = (conversation_id or "").strip()
     if cid:
