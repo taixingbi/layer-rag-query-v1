@@ -65,7 +65,7 @@ async def rag_query_non_stream(
         trace_retrieval=trace_retrieval,
         return_retrieval_hits=return_retrieval_hits,
     )
-    answer, citations, follow_up_questions, latency_ms, retrieval_hits, usage = (
+    answer, citations, follow_up_questions, latency_ms, retrieval_hits, usage, rag = (
         await complete_rag_answer(
             question,
             collection_base,
@@ -96,6 +96,7 @@ async def rag_query_non_stream(
         follow_up_questions=follow_up_questions,
         latency_ms=latency_ms,
         retrieval_hits=retrieval_hits,
+        rag=rag,
         request_id=request_id,
         session_id=session_id,
         trace_id=trace_id,

@@ -26,6 +26,7 @@ from typing import Any
 import httpx
 
 from app.core.config import (
+    get_embedding_model,
     get_final_context_top_k,
     get_inference_max_tokens,
     get_inference_model,
@@ -144,6 +145,88 @@ def _with_citations(answer: str, citations: list[dict]) -> tuple[str, list[dict]
     return answer, _citations_used_in_answer(answer, citations)
 
 
+def _estimate_context_tokens(chunks: list[dict]) -> int:
+    """Rough token estimate from passage text (chars / 4)."""
+    total_chars = sum(len((c.get("text") or "").strip()) for c in chunks)
+    return max(1, total_chars // 4) if total_chars else 0
+
+
+def _retrieval_confidence(top_score: float, *, rerank: bool) -> str:
+    if rerank:
+        if top_score >= 0.7:
+            return "high"
+        if top_score >= 0.4:
+            return "medium"
+        return "low"
+    if top_score >= 0.03:
+        return "high"
+    if top_score >= 0.01:
+        return "medium"
+    return "low"
+
+
+def _top_retrieval_score(prep: "_RagPrep") -> float:
+    if prep.reranked_for_hits:
+        return float(prep.reranked_for_hits[0].get("rerank_score", 0.0))
+    if prep.chunks_full:
+        return float(prep.chunks_full[0].get("score", 0.0))
+    return 0.0
+
+
+def _build_rag_sources(chunks: list[dict], *, limit: int = 5) -> list[dict]:
+    sources: list[dict] = []
+    for i, c in enumerate(chunks[:limit], start=1):
+        score = float(c.get("rerank_score", c.get("score", 0.0)))
+        sources.append(
+            {
+                "rank": i,
+                "score": round(score, 4),
+                "source": str(c.get("source") or ""),
+                "chunk_id": str(c.get("chunk_id") or ""),
+            }
+        )
+    return sources
+
+
+def _build_rag_block(
+    *,
+    question: str,
+    collection_base: str,
+    prep: "_RagPrep",
+    context_chunks: list[dict],
+    context_k: int,
+    k_max: int,
+    use_reranker: bool,
+) -> dict[str, Any]:
+    retrieved = len(prep.chunks_full)
+    if prep.reranked_for_hits:
+        reranked = len(prep.reranked_for_hits)
+    elif use_reranker:
+        reranked = min(prep.rerank_return_top_k, len(prep.candidate_chunks))
+    else:
+        reranked = len(prep.candidate_chunks)
+    top_score = _top_retrieval_score(prep)
+    return {
+        "collection": collection_base,
+        "query": {
+            "original": question,
+            "rewritten": question,
+        },
+        "retrieval": {
+            "embed_model": prep.embed_model,
+            "reranker_model": prep.rerank_model if use_reranker else "",
+            "top_k": k_max,
+            "retrieved_chunks": retrieved,
+            "reranked_chunks": reranked,
+            "context_chunks": context_k,
+            "context_tokens": _estimate_context_tokens(context_chunks),
+            "top_score": round(top_score, 4),
+            "confidence": _retrieval_confidence(top_score, rerank=bool(prep.reranked_for_hits)),
+        },
+        "sources": _build_rag_sources(context_chunks),
+    }
+
+
 def _retrieval_hits_payload(
     chunks_full: list[dict],
     reranked: list[dict] | None,
@@ -249,6 +332,7 @@ class _RagPrep:
 
     infer_base: str
     model: str
+    embed_model: str
     rerank_base: str
     rerank_model: str
     max_tokens: int
@@ -446,6 +530,7 @@ async def _rag_prepare(
     return _RagPrep(
         infer_base=infer_base,
         model=model,
+        embed_model=get_embedding_model(),
         rerank_base=rerank_base,
         rerank_model=rerank_model,
         max_tokens=max_tokens,
@@ -488,12 +573,12 @@ async def complete_rag_answer(
     user: RagUser | None = None,
     conversation_id: str | None = None,
     is_new_conversation: bool = False,
-) -> tuple[str, list[dict], list[str], dict[str, int], list[dict], dict[str, UsageTokens]]:
+) -> tuple[str, list[dict], list[str], dict[str, int], list[dict], dict[str, UsageTokens], dict[str, Any]]:
     """
     ``query_chunks`` → numbered context → ``POST .../v1/chat/completions``.
     Uses ``get_inference_url`` / ``get_inference_model`` / ``get_inference_max_tokens`` (from ``.env`` via ``app.core.config``).
 
-    Returns ``(answer, citations, follow_up_questions, latency_ms, retrieval_hits, usage)`` where ``citations`` lists only passages the model
+    Returns ``(answer, citations, follow_up_questions, latency_ms, retrieval_hits, usage, rag)`` where ``citations`` lists only passages the model
     referenced with ``[n]`` in ``answer`` (each item: ``cite_id``, ``chunk_id``, ``source``, ``text``).
     ``follow_up_questions`` is empty when disabled or on failure; otherwise up to ``follow_up_final`` strings.
     ``latency_ms`` uses stable phase keys (``embed``, ``retrieve_rerank``, ``chat``,
@@ -660,7 +745,16 @@ async def complete_rag_answer(
         retrieval_hits: list[dict] = []
         if include_retrieval_hits:
             retrieval_hits = _retrieval_hits_payload(prep.chunks_full, prep.reranked_for_hits)
-        return answer_out, citations_out, follow_ups, latency_ms, retrieval_hits, usage
+        rag_block = _build_rag_block(
+            question=question,
+            collection_base=collection_base,
+            prep=prep,
+            context_chunks=chunks_for_followups,
+            context_k=current_k,
+            k_max=k_max,
+            use_reranker=use_reranker,
+        )
+        return answer_out, citations_out, follow_ups, latency_ms, retrieval_hits, usage, rag_block
 
 
 async def complete_rag_answer_stream(
@@ -885,6 +979,17 @@ async def complete_rag_answer_stream(
                 "items": _retrieval_hits_payload(prep.chunks_full, prep.reranked_for_hits),
             }
 
+        rag_block = _build_rag_block(
+            question=question,
+            collection_base=collection_base,
+            prep=prep,
+            context_chunks=chunks_for_followups,
+            context_k=current_k,
+            k_max=k_max,
+            use_reranker=use_reranker,
+        )
+        yield {"type": "rag", **rag_block}
+
         total_ms = _elapsed_ms(wall_t0)
         logger.info(
             "complete_rag_answer_stream done k_used=%s follow_up_questions=%s "
@@ -992,7 +1097,7 @@ def main(argv: list[str] | None = None) -> int:
     sid = os.environ.get("RAG_SESSION_ID") or str(uuid.uuid4())
 
     try:
-        answer, citations, follow_up_questions, latency_ms, _retrieval_hits, usage = run_async(
+        answer, citations, follow_up_questions, latency_ms, _retrieval_hits, usage, rag_block = run_async(
             complete_rag_answer(
                 args.question,
                 args.collection,
@@ -1025,6 +1130,7 @@ def main(argv: list[str] | None = None) -> int:
         "follow_up_questions": follow_up_questions,
         "latency_ms": latency_ms,
         "usage": usage,
+        "rag": rag_block,
     }
     if args.retrieval_hits:
         out["retrieval_hits"] = _retrieval_hits
