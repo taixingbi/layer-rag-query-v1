@@ -7,7 +7,7 @@ for embedding ``X-Request-Id`` and ``X-Session-Id``.
 
 Optional: ``INFERENCE_URL``, ``INFERENCE_MODEL``, ``INFERENCE_MAX_TOKENS``,
 ``RERANK_URL``, ``RERANK_MODEL``, ``RERANK_TOP_N``, ``RERANK_RETURN_TOP_K``,
-``RETRIEVE_FALLBACK_N``, ``FINAL_CONTEXT_TOP_K`` (see getters).
+``RETRIEVE_FALLBACK_N``, ``FINAL_CONTEXT_TOP_K``, ``FOLLOW_UP_MIN_CONTEXT_RERANK_SCORE`` (see getters).
 """
 from pathlib import Path
 
@@ -145,3 +145,12 @@ def get_retrieve_fallback_n() -> int:
 def get_final_context_top_k() -> int:
     """Max passages in one chat context (initial ``k`` widen cap). Optional in ``.env``."""
     return int(os.environ.get("FINAL_CONTEXT_TOP_K", str(_DEFAULT_FINAL_CONTEXT_TOP_K)))
+
+
+def get_follow_up_min_context_rerank_score() -> float:
+    """Min cross-encoder score for a follow-up vs a context passage (0–1 scale)."""
+    raw = os.environ.get("FOLLOW_UP_MIN_CONTEXT_RERANK_SCORE", "0.35")
+    try:
+        return float(raw)
+    except ValueError:
+        return 0.35

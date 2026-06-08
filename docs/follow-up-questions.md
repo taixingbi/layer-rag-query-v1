@@ -30,9 +30,10 @@ The final `complete_rag_answer done` log line still emits internal fields (`late
 ## Pipeline
 
 1. **Main RAG** (unchanged): retrieve → optional chunk rerank → chat → citations.
-2. **Context summary**: From **every chunk** in the final context slice used for the last chat turn (all retrieval hits in that slice, not only inline `[n]` citations), build a compact bullet list (`source` + truncated text, ~3.5k chars max) via `_context_summary_for_followups`.
-3. **Generate candidates**: Second call to `INFERENCE_URL` / `v1/chat/completions` asks the model for **only** a JSON object of the shape `{"follow_up_questions": ["…", "…"]}`. Count bounds: `min_gen = max(3, follow_up_candidates - 3)` through `max_gen = follow_up_candidates` (defaults: 5–8 when `follow_up_candidates == 8`). The parser is tolerant: it also accepts a bare JSON array, dicts using the keys `questions` / `follow_ups`, code-fenced JSON, comma-separated arrays, and even concatenated top-level values like `["Q1"]["Q2"]["Q3"]` (a known vLLM glitch); duplicates are de-duplicated by string. **Grounding:** each summary line includes the chunk **`source`** metadata; the system prompt asks for questions answerable from any of those retrieved passages (including sources the answer did not cite inline).
-4. **Rerank**: [`app/http/rerank.py`](../app/http/rerank.py) `rerank_texts` scores each candidate string against `question + "\n\n" + answer` (so the cross-encoder has the full semantic target, not just the short user question), returns all indices ordered by score, then the code keeps the first **`follow_up_final`** (default **3**).
+2. **Context summary**: From **every chunk** in the final context slice used for the last chat turn (all retrieval hits in that slice, not only inline `[n]` citations), build numbered passages (`[n] source` + full text, up to ~12k chars) via `_context_summary_for_followups`. The main answer is **not** included in the generator prompt.
+3. **Generate candidates**: Second call to `INFERENCE_URL` / `v1/chat/completions` asks the model for **only** a JSON object of the shape `{"follow_up_questions": ["…", "…"]}`. Count bounds: `min_gen = max(3, follow_up_candidates - 3)` through `max_gen = follow_up_candidates` (defaults: 5–8 when `follow_up_candidates == 8`). The parser is tolerant: it also accepts a bare JSON array, dicts using the keys `questions` / `follow_ups`, code-fenced JSON, comma-separated arrays, and even concatenated top-level values like `["Q1"]["Q2"]["Q3"]` (a known vLLM glitch); duplicates are de-duplicated by string. **Grounding:** the system prompt requires each follow-up to be directly answerable from the numbered passages only.
+4. **Context filter**: For each candidate, [`app/http/rerank.py`](../app/http/rerank.py) `rerank_texts` scores the question against **context passage texts** (not the main answer). Candidates whose top passage score is below `FOLLOW_UP_MIN_CONTEXT_RERANK_SCORE` (default **0.35**, server `.env`) are dropped.
+5. **Rerank**: Remaining candidates are reranked with query = **context summary** (passages, not `question + answer`); keep the top **`follow_up_final`** (default **3**).
 
 Token budget for the generator: `min(512, max(256, max_tokens))` where `max_tokens` is the same cap used for the main RAG chat for that request.
 
@@ -43,8 +44,10 @@ When generation produces at least one ranked question, `generate_follow_ups` emi
 | Field | Type | Meaning |
 |--------|------|---------|
 | `follow_up_raw_reply` | string | Full assistant `content` from the generator chat call (newlines escaped, **not truncated**). |
-| `follow_up_candidates_full` | array of strings | All parsed/de-duped candidate questions before rerank. |
+| `follow_up_candidates_full` | array of strings | All parsed/de-duped candidate questions before context filter. |
 | `follow_up_candidates_count` | integer | `len(follow_up_candidates_full)`. |
+| `follow_up_grounded` | array of strings | Candidates that passed the context rerank filter. |
+| `follow_up_filter_debug` | array of objects | Per-candidate `question`, `top_score`, `kept` from the context filter. |
 | `follow_up_ranked` | array of strings | Final questions returned to the client (rerank top-`follow_up_final`). |
 | `follow_up_ranked_count` | integer | `len(follow_up_ranked)`. |
 | `latency_follow_up_chat_ms` / `latency_follow_up_rerank_ms` | integer | Same milliseconds reported in the `latency_ms` block. |
@@ -75,7 +78,9 @@ Printed JSON includes `follow_up_questions` and `latency_ms`.
 - **JSON parse failure** after generation → `follow_up_questions: []` (log line `follow_up_questions_empty` with `follow_up_empty_reason` in JSON, e.g. `json_invalid_bracket_slice_failed`, `parsed_not_list:dict`, `parsed_list_no_non_empty_strings`).
 - **Empty model reply** (whitespace-only assistant `content`) → `[]` (same log line with `follow_up_empty_reason=empty_model_reply` at INFO).
 - **No chunks** passed into follow-up generation → `[]` (`follow_up_empty_reason=no_chunks_used`).
-- **Rerank HTTP / transport error** → first `follow_up_final` candidates in **generation order** (warning `follow_up rerank failed`; response is **not** empty unless generation already failed).
+- **Main answer is `NOT_FOUND`** → `[]` (`follow_up_empty_reason=answer_not_found`).
+- **All candidates fail context rerank** → `[]` (`follow_up_empty_reason=context_rerank_filtered_all`).
+- **Rerank HTTP / transport error** (final ordering step) → first `follow_up_final` **grounded** candidates in **generation order** (warning `follow_up rerank failed`; response is **not** empty unless generation or context filter already failed).
 - **Generation exception** (HTTP error, bad response shape, etc.) → `[]` (`follow_up_empty_reason=generation_failed` plus `error_message`).
 - **Client disabled follow-ups** (`include_follow_up_questions: false`) → `[]` (`follow_up_empty_reason=follow_ups_disabled_by_request`).
 

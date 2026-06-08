@@ -113,7 +113,7 @@ Non-stream mode (`"stream": false`). Correlation ids appear in the **body** and 
 |-------|--------|------|-------------|
 | `answer` | yes | string | Model text with inline `[n]` citation markers. |
 | `citations` | yes | array | Passages **referenced** in `answer` via `[n]` (see [Citation](#citation)). |
-| `follow_up_questions` | yes | array of string | Suggested next questions; `[]` when disabled or on failure. |
+| `follow_up_questions` | yes | array of string | Suggested next questions grounded in the final context slice; `[]` when disabled, on failure, main answer is `NOT_FOUND`, or no candidate passes context rerank (see below). |
 | `latency_ms` | yes | object | Per-phase timings in milliseconds (see [Latency](#latency_ms)). |
 | `usage` | yes | object | Token counts from upstream chat completions (see [Usage](#usage)). |
 | `rag` | yes | object | Retrieval summary for clients (see [`rag`](#rag)). |
@@ -207,6 +207,10 @@ Non-stream mode (`"stream": false`). Correlation ids appear in the **body** and 
 | `sources` | array | Up to 5 top context chunks (`rank`, `score`, `source`, `chunk_id`). |
 
 SSE: emitted as `event: rag` before `latency(total)` / `done`.
+
+#### Follow-up grounding (server `.env`)
+
+Follow-ups are generated from the **same context passages** passed to the answer model, then filtered: each candidate is reranked against those passage texts; only questions with top score ≥ `FOLLOW_UP_MIN_CONTEXT_RERANK_SCORE` (default `0.35`) are kept. Tune via `.env` on the RAG service (not a request body field).
 
 #### `latency_ms`
 
