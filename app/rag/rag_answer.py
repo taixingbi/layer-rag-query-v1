@@ -42,6 +42,7 @@ from collections.abc import AsyncIterator
 from app.rag.access import RagUser, compact_for_log
 from app.core.asyncio_util import run_async
 from app.rag.follow_up import generate_follow_ups
+from app.rag.not_found_response import build_search_summary, generate_not_found_response
 from app.http.embed import embed_text
 from app.http.inference import (
     chat_complete,
@@ -72,6 +73,62 @@ def user_facing_answer(answer: str) -> str:
     if not answer or answer.strip() == _NOT_FOUND_REPLY:
         return _NOT_FOUND_USER_MESSAGE
     return answer
+
+
+async def _resolve_not_found_turn(
+    *,
+    question: str,
+    last_answer: str,
+    chunks_for_followups: list[dict],
+    current_k: int,
+    include_follow_up_questions: bool,
+    prep: "_RagPrep",
+    follow_up_candidates: int,
+    follow_up_final: int,
+    request_id: str,
+    session_id: str,
+    trace_id: str | None,
+    conversation_id: str,
+) -> tuple[str, list[str], int, int, UsageTokens | None, dict[str, Any] | None]:
+    """Build structured miss response when the answer model returned NOT_FOUND."""
+    if not _answer_needs_more_context(last_answer):
+        return last_answer, [], 0, 0, None, None
+
+    search_summary = build_search_summary(chunks_for_followups, k_used=current_k)
+    not_found_meta: dict[str, Any] = {"search_summary": search_summary}
+
+    result_text, follow_ups, nf_chat_ms, nf_rerank_ms, nf_usage = (
+        await generate_not_found_response(
+            question=question,
+            chunks_used=chunks_for_followups,
+            search_summary=search_summary,
+            infer_base=prep.infer_base,
+            model=prep.model,
+            max_tokens=prep.max_tokens,
+            rerank_url=prep.rerank_base,
+            rerank_model=prep.rerank_model,
+            follow_up_candidates=follow_up_candidates,
+            follow_up_final=follow_up_final,
+            request_id=request_id,
+            session_id=session_id,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+        )
+    )
+    not_found_meta["result"] = result_text
+    if not include_follow_up_questions:
+        follow_ups = []
+    return result_text, follow_ups, nf_chat_ms, nf_rerank_ms, nf_usage, not_found_meta
+
+
+def _attach_not_found_to_rag(
+    rag_block: dict[str, Any],
+    not_found_meta: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not_found_meta:
+        rag_block = dict(rag_block)
+        rag_block["not_found"] = not_found_meta
+    return rag_block
 
 
 def _elapsed_ms(since: float) -> int:
@@ -695,37 +752,64 @@ async def complete_rag_answer(
             )
             current_k = next_k
 
-        answer_out, citations_out = _with_citations(
-            user_facing_answer(last_answer), last_citations
-        )
+        not_found_meta: dict[str, Any] | None = None
         follow_ups: list[str] = []
         follow_up_chat_ms = 0
         follow_up_rerank_ms = 0
         follow_up_usage: UsageTokens | None = None
-        if include_follow_up_questions:
-            follow_ups, follow_up_chat_ms, follow_up_rerank_ms, follow_up_usage = (
-                await generate_follow_ups(
-                    question=question,
-                    answer=last_answer,
-                    chunks_used=_chunks_for_follow_up_generation(chunks_for_followups),
-                    follow_up_candidates=prep.follow_up_candidates,
-                    follow_up_final=prep.follow_up_final,
-                    infer_base=prep.infer_base,
-                    model=prep.model,
-                    max_tokens_main=prep.max_tokens,
-                    rerank_url=prep.rerank_base,
-                    rerank_model=prep.rerank_model,
-                    request_id=request_id,
-                    session_id=session_id,
-                    trace_id=trace_id,
-                    conversation_id=conv,
-                )
+        if _answer_needs_more_context(last_answer) and expand_on_not_found:
+            (
+                answer_text,
+                follow_ups,
+                follow_up_chat_ms,
+                follow_up_rerank_ms,
+                follow_up_usage,
+                not_found_meta,
+            ) = await _resolve_not_found_turn(
+                question=question,
+                last_answer=last_answer,
+                chunks_for_followups=chunks_for_followups,
+                current_k=current_k,
+                include_follow_up_questions=include_follow_up_questions,
+                prep=prep,
+                follow_up_candidates=prep.follow_up_candidates,
+                follow_up_final=prep.follow_up_final,
+                request_id=request_id,
+                session_id=session_id,
+                trace_id=trace_id,
+                conversation_id=conv,
+            )
+            answer_out, citations_out = _with_citations(answer_text, [])
+        elif _answer_needs_more_context(last_answer):
+            answer_out, citations_out = _with_citations(
+                user_facing_answer(last_answer), last_citations
             )
         else:
-            logger.info(
-                "follow_up_questions_empty reason=follow_ups_disabled_by_request",
-                extra={"follow_up_empty_reason": "follow_ups_disabled_by_request"},
-            )
+            answer_out, citations_out = _with_citations(last_answer, last_citations)
+            if include_follow_up_questions:
+                follow_ups, follow_up_chat_ms, follow_up_rerank_ms, follow_up_usage = (
+                    await generate_follow_ups(
+                        question=question,
+                        answer=last_answer,
+                        chunks_used=_chunks_for_follow_up_generation(chunks_for_followups),
+                        follow_up_candidates=prep.follow_up_candidates,
+                        follow_up_final=prep.follow_up_final,
+                        infer_base=prep.infer_base,
+                        model=prep.model,
+                        max_tokens_main=prep.max_tokens,
+                        rerank_url=prep.rerank_base,
+                        rerank_model=prep.rerank_model,
+                        request_id=request_id,
+                        session_id=session_id,
+                        trace_id=trace_id,
+                        conversation_id=conv,
+                    )
+                )
+            else:
+                logger.info(
+                    "follow_up_questions_empty reason=follow_ups_disabled_by_request",
+                    extra={"follow_up_empty_reason": "follow_ups_disabled_by_request"},
+                )
         usage = build_usage_payload(chat_usage, follow_up_usage)
         total_ms = _elapsed_ms(wall_t0)
         latency_ms = build_latency_ms(
@@ -756,14 +840,17 @@ async def complete_rag_answer(
         retrieval_hits: list[dict] = []
         if include_retrieval_hits:
             retrieval_hits = _retrieval_hits_payload(prep.chunks_full, prep.reranked_for_hits)
-        rag_block = _build_rag_block(
-            question=question,
-            collection_base=collection_base,
-            prep=prep,
-            context_chunks=chunks_for_followups,
-            context_k=current_k,
-            k_max=k_max,
-            use_reranker=use_reranker,
+        rag_block = _attach_not_found_to_rag(
+            _build_rag_block(
+                question=question,
+                collection_base=collection_base,
+                prep=prep,
+                context_chunks=chunks_for_followups,
+                context_k=current_k,
+                k_max=k_max,
+                use_reranker=use_reranker,
+            ),
+            not_found_meta,
         )
         return answer_out, citations_out, follow_ups, latency_ms, retrieval_hits, usage, rag_block
 
@@ -942,47 +1029,75 @@ async def complete_rag_answer_stream(
             }
             current_k = next_k
 
-        if expand_on_not_found:
-            final_text = user_facing_answer(last_answer)
-            if final_text:
-                yield {"type": "answer_delta", "text": final_text}
-
-        yield {"type": "answer_end"}
-        yield {"type": "latency", "phase": LATENCY_CHAT, "ms": chat_ms_total}
-
-        answer_out, citations_out = _with_citations(
-            user_facing_answer(last_answer), last_citations
-        )
-        yield {"type": "citations", "items": citations_out}
-
+        not_found_meta: dict[str, Any] | None = None
         follow_ups: list[str] = []
         follow_up_chat_ms = 0
         follow_up_rerank_ms = 0
         follow_up_usage: UsageTokens | None = None
-        if include_follow_up_questions:
-            follow_ups, follow_up_chat_ms, follow_up_rerank_ms, follow_up_usage = (
-                await generate_follow_ups(
-                    question=question,
-                    answer=last_answer,
-                    chunks_used=_chunks_for_follow_up_generation(chunks_for_followups),
-                    follow_up_candidates=prep.follow_up_candidates,
-                    follow_up_final=prep.follow_up_final,
-                    infer_base=prep.infer_base,
-                    model=prep.model,
-                    max_tokens_main=prep.max_tokens,
-                    rerank_url=prep.rerank_base,
-                    rerank_model=prep.rerank_model,
-                    request_id=request_id,
-                    session_id=session_id,
-                    trace_id=trace_id,
-                    conversation_id=conv,
-                )
+        if _answer_needs_more_context(last_answer) and expand_on_not_found:
+            (
+                answer_text,
+                follow_ups,
+                follow_up_chat_ms,
+                follow_up_rerank_ms,
+                follow_up_usage,
+                not_found_meta,
+            ) = await _resolve_not_found_turn(
+                question=question,
+                last_answer=last_answer,
+                chunks_for_followups=chunks_for_followups,
+                current_k=current_k,
+                include_follow_up_questions=include_follow_up_questions,
+                prep=prep,
+                follow_up_candidates=prep.follow_up_candidates,
+                follow_up_final=prep.follow_up_final,
+                request_id=request_id,
+                session_id=session_id,
+                trace_id=trace_id,
+                conversation_id=conv,
             )
+            if answer_text:
+                yield {"type": "answer_delta", "text": answer_text}
+            answer_out, citations_out = _with_citations(answer_text, [])
+        elif _answer_needs_more_context(last_answer):
+            answer_text = user_facing_answer(last_answer)
+            if expand_on_not_found and answer_text:
+                yield {"type": "answer_delta", "text": answer_text}
+            answer_out, citations_out = _with_citations(answer_text, last_citations)
         else:
-            logger.info(
-                "follow_up_questions_empty reason=follow_ups_disabled_by_request",
-                extra={"follow_up_empty_reason": "follow_ups_disabled_by_request"},
-            )
+            if expand_on_not_found:
+                final_text = last_answer
+                if final_text:
+                    yield {"type": "answer_delta", "text": final_text}
+            answer_out, citations_out = _with_citations(last_answer, last_citations)
+            if include_follow_up_questions:
+                follow_ups, follow_up_chat_ms, follow_up_rerank_ms, follow_up_usage = (
+                    await generate_follow_ups(
+                        question=question,
+                        answer=last_answer,
+                        chunks_used=_chunks_for_follow_up_generation(chunks_for_followups),
+                        follow_up_candidates=prep.follow_up_candidates,
+                        follow_up_final=prep.follow_up_final,
+                        infer_base=prep.infer_base,
+                        model=prep.model,
+                        max_tokens_main=prep.max_tokens,
+                        rerank_url=prep.rerank_base,
+                        rerank_model=prep.rerank_model,
+                        request_id=request_id,
+                        session_id=session_id,
+                        trace_id=trace_id,
+                        conversation_id=conv,
+                    )
+                )
+            else:
+                logger.info(
+                    "follow_up_questions_empty reason=follow_ups_disabled_by_request",
+                    extra={"follow_up_empty_reason": "follow_ups_disabled_by_request"},
+                )
+
+        yield {"type": "answer_end"}
+        yield {"type": "latency", "phase": LATENCY_CHAT, "ms": chat_ms_total}
+        yield {"type": "citations", "items": citations_out}
         yield {"type": "follow_up_questions", "items": follow_ups}
         yield {
             "type": "latency",
@@ -998,14 +1113,17 @@ async def complete_rag_answer_stream(
                 "items": _retrieval_hits_payload(prep.chunks_full, prep.reranked_for_hits),
             }
 
-        rag_block = _build_rag_block(
-            question=question,
-            collection_base=collection_base,
-            prep=prep,
-            context_chunks=chunks_for_followups,
-            context_k=current_k,
-            k_max=k_max,
-            use_reranker=use_reranker,
+        rag_block = _attach_not_found_to_rag(
+            _build_rag_block(
+                question=question,
+                collection_base=collection_base,
+                prep=prep,
+                context_chunks=chunks_for_followups,
+                context_k=current_k,
+                k_max=k_max,
+                use_reranker=use_reranker,
+            ),
+            not_found_meta,
         )
         yield {"type": "rag", **rag_block}
 
