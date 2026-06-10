@@ -25,9 +25,12 @@ from typing import Any
 
 import httpx
 
+from app.cache.keys import acl_fingerprint_for_user, follow_up_cfg_fingerprint
+from app.cache.miss import get_cached_miss, miss_cache_key, set_cached_miss
 from app.core.config import (
     get_embedding_model,
     get_final_context_top_k,
+    get_follow_up_min_context_rerank_score,
     get_inference_max_tokens,
     get_inference_model,
     get_inference_url,
@@ -89,6 +92,8 @@ async def _resolve_not_found_turn(
     session_id: str,
     trace_id: str | None,
     conversation_id: str,
+    collection_base: str,
+    user: RagUser | None,
 ) -> tuple[str, list[str], int, int, UsageTokens | None, dict[str, Any] | None]:
     """Build structured miss response when the answer model returned NOT_FOUND."""
     if not _answer_needs_more_context(last_answer):
@@ -96,6 +101,31 @@ async def _resolve_not_found_turn(
 
     search_summary = build_search_summary(chunks_for_followups, k_used=current_k)
     not_found_meta: dict[str, Any] = {"search_summary": search_summary}
+
+    min_context_score = get_follow_up_min_context_rerank_score()
+    cfg_hash = follow_up_cfg_fingerprint(
+        infer_model=prep.model,
+        rerank_model=prep.rerank_model,
+        follow_up_candidates=follow_up_candidates,
+        follow_up_final=follow_up_final,
+        min_context_score=min_context_score,
+    )
+    miss_key = miss_cache_key(
+        collection_base=collection_base,
+        question=question,
+        chunks=chunks_for_followups,
+        acl=acl_fingerprint_for_user(user),
+        cfg_hash=cfg_hash,
+    )
+    cached_miss = await get_cached_miss(miss_key)
+    if cached_miss is not None:
+        result_text = cached_miss.result
+        follow_ups = list(cached_miss.follow_up_questions)
+        if not include_follow_up_questions:
+            follow_ups = []
+        not_found_meta["result"] = result_text
+        logger.info("not_found_response cache_hit follow_ups=%s", len(follow_ups))
+        return result_text, follow_ups, 0, 0, None, not_found_meta
 
     result_text, follow_ups, nf_chat_ms, nf_rerank_ms, nf_usage = (
         await generate_not_found_response(
@@ -118,6 +148,12 @@ async def _resolve_not_found_turn(
     not_found_meta["result"] = result_text
     if not include_follow_up_questions:
         follow_ups = []
+    else:
+        await set_cached_miss(
+            miss_key,
+            result=result_text,
+            follow_up_questions=follow_ups,
+        )
     return result_text, follow_ups, nf_chat_ms, nf_rerank_ms, nf_usage, not_found_meta
 
 
@@ -778,6 +814,8 @@ async def complete_rag_answer(
                 session_id=session_id,
                 trace_id=trace_id,
                 conversation_id=conv,
+                collection_base=collection_base,
+                user=user,
             )
             answer_out, citations_out = _with_citations(answer_text, [])
         elif _answer_needs_more_context(last_answer):
@@ -803,6 +841,8 @@ async def complete_rag_answer(
                         session_id=session_id,
                         trace_id=trace_id,
                         conversation_id=conv,
+                        collection_base=collection_base,
+                        user=user,
                     )
                 )
             else:
@@ -1055,6 +1095,8 @@ async def complete_rag_answer_stream(
                 session_id=session_id,
                 trace_id=trace_id,
                 conversation_id=conv,
+                collection_base=collection_base,
+                user=user,
             )
             if answer_text:
                 yield {"type": "answer_delta", "text": answer_text}
@@ -1087,6 +1129,8 @@ async def complete_rag_answer_stream(
                         session_id=session_id,
                         trace_id=trace_id,
                         conversation_id=conv,
+                        collection_base=collection_base,
+                        user=user,
                     )
                 )
             else:

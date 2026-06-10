@@ -10,7 +10,14 @@ import json
 import logging
 import time
 
+from app.cache.follow_up import (
+    follow_up_cache_key,
+    get_cached_follow_ups,
+    set_cached_follow_ups,
+)
+from app.cache.keys import acl_fingerprint_for_user, follow_up_cfg_fingerprint
 from app.core.config import get_follow_up_min_context_rerank_score
+from app.rag.access import RagUser
 from app.http.inference import chat_complete
 from app.http.usage import UsageTokens
 from app.http.rerank import rerank_texts
@@ -341,6 +348,8 @@ async def generate_follow_ups(
     session_id: str,
     trace_id: str | None = None,
     conversation_id: str | None = None,
+    collection_base: str = "",
+    user: RagUser | None = None,
 ) -> tuple[list[str], int, int, UsageTokens | None]:
     """Returns ``(questions, chat_ms, rerank_ms, chat_usage)``; times are zero when skipped."""
     if not chunks_used:
@@ -356,12 +365,32 @@ async def generate_follow_ups(
         )
         return [], 0, 0, None
 
+    min_context_score = get_follow_up_min_context_rerank_score()
+    cfg_hash = follow_up_cfg_fingerprint(
+        infer_model=model,
+        rerank_model=rerank_model,
+        follow_up_candidates=follow_up_candidates,
+        follow_up_final=follow_up_final,
+        min_context_score=min_context_score,
+    )
+    cache_key = follow_up_cache_key(
+        collection_base=collection_base,
+        question=question,
+        answer=answer,
+        chunks=chunks_used,
+        acl=acl_fingerprint_for_user(user),
+        cfg_hash=cfg_hash,
+    )
+    cached = await get_cached_follow_ups(cache_key)
+    if cached is not None:
+        logger.info("follow_up_questions cache_hit count=%s", len(cached))
+        return cached, 0, 0, None
+
     min_gen = max(3, follow_up_candidates - 3)
     max_gen = follow_up_candidates
     if min_gen > max_gen:
         min_gen = max_gen
     summary = _context_summary_for_followups(chunks_used)
-    min_context_score = get_follow_up_min_context_rerank_score()
     gen_budget = min(_FOLLOW_UP_GEN_MAX_TOKENS_CAP, max(256, max_tokens_main))
     gen_t0 = time.perf_counter()
     try:
@@ -444,4 +473,5 @@ async def generate_follow_ups(
                 "latency_follow_up_rerank_ms": rr_ms,
             },
         )
+        await set_cached_follow_ups(cache_key, ranked)
     return ranked, gen_ms, rr_ms, chat_usage
