@@ -64,6 +64,15 @@ from app.rag.retrieval import query_chunks
 from app.core.request_context import bind_request_context
 
 _NOT_FOUND_REPLY = "NOT_FOUND"
+_NOT_FOUND_USER_MESSAGE = "I couldn't find that in the knowledge base."
+
+
+def user_facing_answer(answer: str) -> str:
+    """Map the internal NOT_FOUND sentinel to text suitable for chat UIs."""
+    if not answer or answer.strip() == _NOT_FOUND_REPLY:
+        return _NOT_FOUND_USER_MESSAGE
+    return answer
+
 
 def _elapsed_ms(since: float) -> int:
     """Wall time in milliseconds from ``time.perf_counter()`` mark ``since``."""
@@ -686,7 +695,9 @@ async def complete_rag_answer(
             )
             current_k = next_k
 
-        answer_out, citations_out = _with_citations(last_answer, last_citations)
+        answer_out, citations_out = _with_citations(
+            user_facing_answer(last_answer), last_citations
+        )
         follow_ups: list[str] = []
         follow_up_chat_ms = 0
         follow_up_rerank_ms = 0
@@ -695,7 +706,7 @@ async def complete_rag_answer(
             follow_ups, follow_up_chat_ms, follow_up_rerank_ms, follow_up_usage = (
                 await generate_follow_ups(
                     question=question,
-                    answer=answer_out,
+                    answer=last_answer,
                     chunks_used=_chunks_for_follow_up_generation(chunks_for_followups),
                     follow_up_candidates=prep.follow_up_candidates,
                     follow_up_final=prep.follow_up_final,
@@ -880,6 +891,7 @@ async def complete_rag_answer_stream(
                 answer_started = True
             t_chat = time.perf_counter()
             attempt_parts: list[str] = []
+            stream_live = not expand_on_not_found
             async for piece in chat_complete_stream(
                 base_url=prep.infer_base,
                 model=prep.model,
@@ -892,7 +904,8 @@ async def complete_rag_answer_stream(
             ):
                 if piece.delta:
                     attempt_parts.append(piece.delta)
-                    yield {"type": "answer_delta", "text": piece.delta}
+                    if stream_live:
+                        yield {"type": "answer_delta", "text": piece.delta}
                 if piece.usage:
                     chat_usage = merge_usage(chat_usage, piece.usage)
             chat_ms_total += _elapsed_ms(t_chat)
@@ -927,13 +940,19 @@ async def complete_rag_answer_stream(
                 "prev_k": current_k,
                 "next_k": next_k,
             }
-            yield {"type": "answer_start"}
             current_k = next_k
+
+        if expand_on_not_found:
+            final_text = user_facing_answer(last_answer)
+            if final_text:
+                yield {"type": "answer_delta", "text": final_text}
 
         yield {"type": "answer_end"}
         yield {"type": "latency", "phase": LATENCY_CHAT, "ms": chat_ms_total}
 
-        answer_out, citations_out = _with_citations(last_answer, last_citations)
+        answer_out, citations_out = _with_citations(
+            user_facing_answer(last_answer), last_citations
+        )
         yield {"type": "citations", "items": citations_out}
 
         follow_ups: list[str] = []
@@ -944,7 +963,7 @@ async def complete_rag_answer_stream(
             follow_ups, follow_up_chat_ms, follow_up_rerank_ms, follow_up_usage = (
                 await generate_follow_ups(
                     question=question,
-                    answer=answer_out,
+                    answer=last_answer,
                     chunks_used=_chunks_for_follow_up_generation(chunks_for_followups),
                     follow_up_candidates=prep.follow_up_candidates,
                     follow_up_final=prep.follow_up_final,
