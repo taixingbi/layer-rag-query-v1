@@ -49,12 +49,22 @@ RAG_PHASE_DURATION_SECONDS = Histogram(
     ("phase",),
     buckets=_RAG_LATENCY_BUCKETS,
 )
+RAG_CACHE_OPS_TOTAL = Counter(
+    "rag_cache_ops_total",
+    "RAG Redis cache lookups by layer and result.",
+    ("layer", "result"),
+)
 
 
 def observe_http(method: str, path: str, status_code: int, latency_s: float) -> None:
     status = str(int(status_code))
     HTTP_REQUESTS_TOTAL.labels(method=method, path=path, status=status).inc()
     HTTP_REQUEST_DURATION_SECONDS.labels(method=method, path=path).observe(max(0.0, latency_s))
+
+
+def observe_cache_op(layer: str, result: str) -> None:
+    """Record cache hit, miss, or error (fail-open paths use error sparingly)."""
+    RAG_CACHE_OPS_TOTAL.labels(layer=layer, result=result).inc()
 
 
 def observe_rag_query(

@@ -113,9 +113,10 @@ Non-stream mode (`"stream": false`). Correlation ids appear in the **body** and 
 |-------|--------|------|-------------|
 | `answer` | yes | string | Model text with inline `[n]` citation markers. |
 | `citations` | yes | array | Passages **referenced** in `answer` via `[n]` (see [Citation](#citation)). |
-| `follow_up_questions` | yes | array of string | Suggested next questions; `[]` when disabled or on failure. |
+| `follow_up_questions` | yes | array of string | Suggested next questions grounded in the final context slice; `[]` when disabled, on failure, main answer is `NOT_FOUND`, or no candidate passes context rerank (see below). |
 | `latency_ms` | yes | object | Per-phase timings in milliseconds (see [Latency](#latency_ms)). |
 | `usage` | yes | object | Token counts from upstream chat completions (see [Usage](#usage)). |
+| `rag` | yes | object | Retrieval summary for clients (see [`rag`](#rag)). |
 | `request_id` | yes | string | Same as `X-Request-Id`. |
 | `session_id` | yes | string | Same as `X-Session-Id`. |
 | `trace_id` | yes | string \| null | Same as `X-Trace-Id` when sent; else `null`. |
@@ -152,6 +153,32 @@ Non-stream mode (`"stream": false`). Correlation ids appear in the **body** and 
     "chat": { "prompt_tokens": 3100, "completion_tokens": 120, "total_tokens": 3220 },
     "follow_up_chat": { "prompt_tokens": 1100, "completion_tokens": 260, "total_tokens": 1360 }
   },
+  "rag": {
+    "collection": "taixing_knowledge",
+    "query": {
+      "original": "What is Taixing Bi's visa status?",
+      "rewritten": "What is Taixing Bi's visa status?"
+    },
+    "retrieval": {
+      "embed_model": "BAAI/bge-m3",
+      "reranker_model": "BAAI/bge-reranker-v2-m3",
+      "top_k": 40,
+      "retrieved_chunks": 40,
+      "reranked_chunks": 10,
+      "context_chunks": 5,
+      "context_tokens": 1248,
+      "top_score": 0.98,
+      "confidence": "high"
+    },
+    "sources": [
+      {
+        "rank": 1,
+        "score": 0.98,
+        "source": "personal_profile",
+        "chunk_id": "1607b45e-1c07-5c29-975d-bbf47ef3129c"
+      }
+    ]
+  },
   "request_id": "req-abc123",
   "session_id": "ses-xyz789",
   "trace_id": "trc-001",
@@ -169,6 +196,21 @@ Non-stream mode (`"stream": false`). Correlation ids appear in the **body** and 
 | `chunk_id` | string | Qdrant point id. |
 | `source` | string | Document / passage label. |
 | `text` | string | Full cited passage. |
+
+#### `rag`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `collection` | string | Logical collection base (no `_{ENV}` suffix). |
+| `query` | object | `original` and `rewritten` question strings. |
+| `retrieval` | object | Models, chunk funnel counts, `context_tokens`, `top_score`, `confidence` (`high` \| `medium` \| `low`). |
+| `sources` | array | Up to 5 top context chunks (`rank`, `score`, `source`, `chunk_id`). |
+
+SSE: emitted as `event: rag` before `latency(total)` / `done`.
+
+#### Follow-up grounding (server `.env`)
+
+Follow-ups are generated from the **same context passages** passed to the answer model, then filtered: each candidate is reranked against those passage texts; only questions with top score ≥ `FOLLOW_UP_MIN_CONTEXT_RERANK_SCORE` (default `0.35`) are kept. Tune via `.env` on the RAG service (not a request body field).
 
 #### `latency_ms`
 

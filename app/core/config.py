@@ -7,7 +7,7 @@ for embedding ``X-Request-Id`` and ``X-Session-Id``.
 
 Optional: ``INFERENCE_URL``, ``INFERENCE_MODEL``, ``INFERENCE_MAX_TOKENS``,
 ``RERANK_URL``, ``RERANK_MODEL``, ``RERANK_TOP_N``, ``RERANK_RETURN_TOP_K``,
-``RETRIEVE_FALLBACK_N``, ``FINAL_CONTEXT_TOP_K`` (see getters).
+``RETRIEVE_FALLBACK_N``, ``FINAL_CONTEXT_TOP_K``, ``FOLLOW_UP_MIN_CONTEXT_RERANK_SCORE`` (see getters).
 """
 from pathlib import Path
 
@@ -145,3 +145,46 @@ def get_retrieve_fallback_n() -> int:
 def get_final_context_top_k() -> int:
     """Max passages in one chat context (initial ``k`` widen cap). Optional in ``.env``."""
     return int(os.environ.get("FINAL_CONTEXT_TOP_K", str(_DEFAULT_FINAL_CONTEXT_TOP_K)))
+
+
+def get_follow_up_min_context_rerank_score() -> float:
+    """Min cross-encoder score for a follow-up vs a context passage (0–1 scale)."""
+    raw = os.environ.get("FOLLOW_UP_MIN_CONTEXT_RERANK_SCORE", "0.35")
+    try:
+        return float(raw)
+    except ValueError:
+        return 0.35
+
+
+_DEFAULT_CACHE_EMBED_TTL = 2_592_000  # 30 days
+_DEFAULT_CACHE_FOLLOW_UP_TTL = 86_400  # 24h
+_DEFAULT_CACHE_MISS_TTL = 3_600  # 1h
+
+
+def get_redis_url() -> str:
+    """Redis URL for optional RAG caches. Empty disables cache."""
+    return os.environ.get("REDIS_URL", "").strip()
+
+
+def cache_enabled() -> bool:
+    raw = os.environ.get("CACHE_ENABLED", "true").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return bool(get_redis_url())
+
+
+def get_kb_cache_revision() -> str:
+    """Bump after KB re-ingest to invalidate follow-up / miss caches."""
+    return os.environ.get("KB_CACHE_REVISION", "v1").strip() or "v1"
+
+
+def get_cache_embed_ttl_seconds() -> int:
+    return int(os.environ.get("CACHE_EMBED_TTL_SECONDS", str(_DEFAULT_CACHE_EMBED_TTL)))
+
+
+def get_cache_follow_up_ttl_seconds() -> int:
+    return int(os.environ.get("CACHE_FOLLOW_UP_TTL_SECONDS", str(_DEFAULT_CACHE_FOLLOW_UP_TTL)))
+
+
+def get_cache_miss_ttl_seconds() -> int:
+    return int(os.environ.get("CACHE_MISS_TTL_SECONDS", str(_DEFAULT_CACHE_MISS_TTL)))

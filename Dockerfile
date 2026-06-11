@@ -1,5 +1,5 @@
 # layer-rag-query: FastMCP HTTP (default port 8000). In k3s, map Service NodePort (e.g. 30183) → targetPort 8000.
-FROM python:3.11-slim
+FROM public.ecr.aws/docker/library/python:3.11-slim
 
 ARG APP_VERSION=dev
 ARG GIT_SHA=unknown

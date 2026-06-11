@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import httpx
 
+from app.cache.embedding import get_cached_embedding, set_cached_embedding
 from app.core.config import get_embedding_model, get_embedding_url, VECTOR_SIZE
 from app.http._correlation import correlation_headers
 from app.core.logging_config import logger
@@ -87,16 +88,23 @@ async def embed_text(
     timeout: float = 30.0,
 ) -> list[float]:
     """Embed one string and return a single vector."""
+    m = model or get_embedding_model()
+    cached = await get_cached_embedding(text, model=m)
+    if cached is not None:
+        logger.info("embed_text cache_hit model=%s", m)
+        return cached
     rows = await embed_texts(
         [text],
         request_id=request_id,
         session_id=session_id,
         trace_id=trace_id,
         conversation_id=conversation_id,
-        model=model,
+        model=m,
         base_url=base_url,
         timeout=timeout,
     )
     if not rows:
         raise RuntimeError("Embedding API returned empty data.")
-    return rows[0]
+    vector = rows[0]
+    await set_cached_embedding(text, vector, model=m)
+    return vector

@@ -25,8 +25,12 @@ from typing import Any
 
 import httpx
 
+from app.cache.keys import acl_fingerprint_for_user, follow_up_cfg_fingerprint
+from app.cache.miss import get_cached_miss, miss_cache_key, set_cached_miss
 from app.core.config import (
+    get_embedding_model,
     get_final_context_top_k,
+    get_follow_up_min_context_rerank_score,
     get_inference_max_tokens,
     get_inference_model,
     get_inference_url,
@@ -41,6 +45,7 @@ from collections.abc import AsyncIterator
 from app.rag.access import RagUser, compact_for_log
 from app.core.asyncio_util import run_async
 from app.rag.follow_up import generate_follow_ups
+from app.rag.not_found_response import build_search_summary, generate_not_found_response
 from app.http.embed import embed_text
 from app.http.inference import (
     chat_complete,
@@ -63,6 +68,104 @@ from app.rag.retrieval import query_chunks
 from app.core.request_context import bind_request_context
 
 _NOT_FOUND_REPLY = "NOT_FOUND"
+_NOT_FOUND_USER_MESSAGE = "I couldn't find that in the knowledge base."
+
+
+def user_facing_answer(answer: str) -> str:
+    """Map the internal NOT_FOUND sentinel to text suitable for chat UIs."""
+    if not answer or answer.strip() == _NOT_FOUND_REPLY:
+        return _NOT_FOUND_USER_MESSAGE
+    return answer
+
+
+async def _resolve_not_found_turn(
+    *,
+    question: str,
+    last_answer: str,
+    chunks_for_followups: list[dict],
+    current_k: int,
+    include_follow_up_questions: bool,
+    prep: "_RagPrep",
+    follow_up_candidates: int,
+    follow_up_final: int,
+    request_id: str,
+    session_id: str,
+    trace_id: str | None,
+    conversation_id: str,
+    collection_base: str,
+    user: RagUser | None,
+) -> tuple[str, list[str], int, int, UsageTokens | None, dict[str, Any] | None]:
+    """Build structured miss response when the answer model returned NOT_FOUND."""
+    if not _answer_needs_more_context(last_answer):
+        return last_answer, [], 0, 0, None, None
+
+    search_summary = build_search_summary(chunks_for_followups, k_used=current_k)
+    not_found_meta: dict[str, Any] = {"search_summary": search_summary}
+
+    min_context_score = get_follow_up_min_context_rerank_score()
+    cfg_hash = follow_up_cfg_fingerprint(
+        infer_model=prep.model,
+        rerank_model=prep.rerank_model,
+        follow_up_candidates=follow_up_candidates,
+        follow_up_final=follow_up_final,
+        min_context_score=min_context_score,
+    )
+    miss_key = miss_cache_key(
+        collection_base=collection_base,
+        question=question,
+        chunks=chunks_for_followups,
+        acl=acl_fingerprint_for_user(user),
+        cfg_hash=cfg_hash,
+    )
+    cached_miss = await get_cached_miss(miss_key)
+    if cached_miss is not None:
+        result_text = cached_miss.result
+        follow_ups = list(cached_miss.follow_up_questions)
+        if not include_follow_up_questions:
+            follow_ups = []
+        not_found_meta["result"] = result_text
+        logger.info("not_found_response cache_hit follow_ups=%s", len(follow_ups))
+        return result_text, follow_ups, 0, 0, None, not_found_meta
+
+    result_text, follow_ups, nf_chat_ms, nf_rerank_ms, nf_usage = (
+        await generate_not_found_response(
+            question=question,
+            chunks_used=chunks_for_followups,
+            search_summary=search_summary,
+            infer_base=prep.infer_base,
+            model=prep.model,
+            max_tokens=prep.max_tokens,
+            rerank_url=prep.rerank_base,
+            rerank_model=prep.rerank_model,
+            follow_up_candidates=follow_up_candidates,
+            follow_up_final=follow_up_final,
+            request_id=request_id,
+            session_id=session_id,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+        )
+    )
+    not_found_meta["result"] = result_text
+    if not include_follow_up_questions:
+        follow_ups = []
+    else:
+        await set_cached_miss(
+            miss_key,
+            result=result_text,
+            follow_up_questions=follow_ups,
+        )
+    return result_text, follow_ups, nf_chat_ms, nf_rerank_ms, nf_usage, not_found_meta
+
+
+def _attach_not_found_to_rag(
+    rag_block: dict[str, Any],
+    not_found_meta: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not_found_meta:
+        rag_block = dict(rag_block)
+        rag_block["not_found"] = not_found_meta
+    return rag_block
+
 
 def _elapsed_ms(since: float) -> int:
     """Wall time in milliseconds from ``time.perf_counter()`` mark ``since``."""
@@ -142,6 +245,88 @@ def _answer_needs_more_context(answer: str) -> bool:
 
 def _with_citations(answer: str, citations: list[dict]) -> tuple[str, list[dict]]:
     return answer, _citations_used_in_answer(answer, citations)
+
+
+def _estimate_context_tokens(chunks: list[dict]) -> int:
+    """Rough token estimate from passage text (chars / 4)."""
+    total_chars = sum(len((c.get("text") or "").strip()) for c in chunks)
+    return max(1, total_chars // 4) if total_chars else 0
+
+
+def _retrieval_confidence(top_score: float, *, rerank: bool) -> str:
+    if rerank:
+        if top_score >= 0.7:
+            return "high"
+        if top_score >= 0.4:
+            return "medium"
+        return "low"
+    if top_score >= 0.03:
+        return "high"
+    if top_score >= 0.01:
+        return "medium"
+    return "low"
+
+
+def _top_retrieval_score(prep: "_RagPrep") -> float:
+    if prep.reranked_for_hits:
+        return float(prep.reranked_for_hits[0].get("rerank_score", 0.0))
+    if prep.chunks_full:
+        return float(prep.chunks_full[0].get("score", 0.0))
+    return 0.0
+
+
+def _build_rag_sources(chunks: list[dict], *, limit: int = 5) -> list[dict]:
+    sources: list[dict] = []
+    for i, c in enumerate(chunks[:limit], start=1):
+        score = float(c.get("rerank_score", c.get("score", 0.0)))
+        sources.append(
+            {
+                "rank": i,
+                "score": round(score, 4),
+                "source": str(c.get("source") or ""),
+                "chunk_id": str(c.get("chunk_id") or ""),
+            }
+        )
+    return sources
+
+
+def _build_rag_block(
+    *,
+    question: str,
+    collection_base: str,
+    prep: "_RagPrep",
+    context_chunks: list[dict],
+    context_k: int,
+    k_max: int,
+    use_reranker: bool,
+) -> dict[str, Any]:
+    retrieved = len(prep.chunks_full)
+    if prep.reranked_for_hits:
+        reranked = len(prep.reranked_for_hits)
+    elif use_reranker:
+        reranked = min(prep.rerank_return_top_k, len(prep.candidate_chunks))
+    else:
+        reranked = len(prep.candidate_chunks)
+    top_score = _top_retrieval_score(prep)
+    return {
+        "collection": collection_base,
+        "query": {
+            "original": question,
+            "rewritten": question,
+        },
+        "retrieval": {
+            "embed_model": prep.embed_model,
+            "reranker_model": prep.rerank_model if use_reranker else "",
+            "top_k": k_max,
+            "retrieved_chunks": retrieved,
+            "reranked_chunks": reranked,
+            "context_chunks": context_k,
+            "context_tokens": _estimate_context_tokens(context_chunks),
+            "top_score": round(top_score, 4),
+            "confidence": _retrieval_confidence(top_score, rerank=bool(prep.reranked_for_hits)),
+        },
+        "sources": _build_rag_sources(context_chunks),
+    }
 
 
 def _retrieval_hits_payload(
@@ -249,6 +434,7 @@ class _RagPrep:
 
     infer_base: str
     model: str
+    embed_model: str
     rerank_base: str
     rerank_model: str
     max_tokens: int
@@ -446,6 +632,7 @@ async def _rag_prepare(
     return _RagPrep(
         infer_base=infer_base,
         model=model,
+        embed_model=get_embedding_model(),
         rerank_base=rerank_base,
         rerank_model=rerank_model,
         max_tokens=max_tokens,
@@ -488,12 +675,12 @@ async def complete_rag_answer(
     user: RagUser | None = None,
     conversation_id: str | None = None,
     is_new_conversation: bool = False,
-) -> tuple[str, list[dict], list[str], dict[str, int], list[dict], dict[str, UsageTokens]]:
+) -> tuple[str, list[dict], list[str], dict[str, int], list[dict], dict[str, UsageTokens], dict[str, Any]]:
     """
     ``query_chunks`` → numbered context → ``POST .../v1/chat/completions``.
     Uses ``get_inference_url`` / ``get_inference_model`` / ``get_inference_max_tokens`` (from ``.env`` via ``app.core.config``).
 
-    Returns ``(answer, citations, follow_up_questions, latency_ms, retrieval_hits, usage)`` where ``citations`` lists only passages the model
+    Returns ``(answer, citations, follow_up_questions, latency_ms, retrieval_hits, usage, rag)`` where ``citations`` lists only passages the model
     referenced with ``[n]`` in ``answer`` (each item: ``cite_id``, ``chunk_id``, ``source``, ``text``).
     ``follow_up_questions`` is empty when disabled or on failure; otherwise up to ``follow_up_final`` strings.
     ``latency_ms`` uses stable phase keys (``embed``, ``retrieve_rerank``, ``chat``,
@@ -601,35 +788,68 @@ async def complete_rag_answer(
             )
             current_k = next_k
 
-        answer_out, citations_out = _with_citations(last_answer, last_citations)
+        not_found_meta: dict[str, Any] | None = None
         follow_ups: list[str] = []
         follow_up_chat_ms = 0
         follow_up_rerank_ms = 0
         follow_up_usage: UsageTokens | None = None
-        if include_follow_up_questions:
-            follow_ups, follow_up_chat_ms, follow_up_rerank_ms, follow_up_usage = (
-                await generate_follow_ups(
-                    question=question,
-                    answer=answer_out,
-                    chunks_used=_chunks_for_follow_up_generation(chunks_for_followups),
-                    follow_up_candidates=prep.follow_up_candidates,
-                    follow_up_final=prep.follow_up_final,
-                    infer_base=prep.infer_base,
-                    model=prep.model,
-                    max_tokens_main=prep.max_tokens,
-                    rerank_url=prep.rerank_base,
-                    rerank_model=prep.rerank_model,
-                    request_id=request_id,
-                    session_id=session_id,
-                    trace_id=trace_id,
-                    conversation_id=conv,
-                )
+        if _answer_needs_more_context(last_answer) and expand_on_not_found:
+            (
+                answer_text,
+                follow_ups,
+                follow_up_chat_ms,
+                follow_up_rerank_ms,
+                follow_up_usage,
+                not_found_meta,
+            ) = await _resolve_not_found_turn(
+                question=question,
+                last_answer=last_answer,
+                chunks_for_followups=chunks_for_followups,
+                current_k=current_k,
+                include_follow_up_questions=include_follow_up_questions,
+                prep=prep,
+                follow_up_candidates=prep.follow_up_candidates,
+                follow_up_final=prep.follow_up_final,
+                request_id=request_id,
+                session_id=session_id,
+                trace_id=trace_id,
+                conversation_id=conv,
+                collection_base=collection_base,
+                user=user,
+            )
+            answer_out, citations_out = _with_citations(answer_text, [])
+        elif _answer_needs_more_context(last_answer):
+            answer_out, citations_out = _with_citations(
+                user_facing_answer(last_answer), last_citations
             )
         else:
-            logger.info(
-                "follow_up_questions_empty reason=follow_ups_disabled_by_request",
-                extra={"follow_up_empty_reason": "follow_ups_disabled_by_request"},
-            )
+            answer_out, citations_out = _with_citations(last_answer, last_citations)
+            if include_follow_up_questions:
+                follow_ups, follow_up_chat_ms, follow_up_rerank_ms, follow_up_usage = (
+                    await generate_follow_ups(
+                        question=question,
+                        answer=last_answer,
+                        chunks_used=_chunks_for_follow_up_generation(chunks_for_followups),
+                        follow_up_candidates=prep.follow_up_candidates,
+                        follow_up_final=prep.follow_up_final,
+                        infer_base=prep.infer_base,
+                        model=prep.model,
+                        max_tokens_main=prep.max_tokens,
+                        rerank_url=prep.rerank_base,
+                        rerank_model=prep.rerank_model,
+                        request_id=request_id,
+                        session_id=session_id,
+                        trace_id=trace_id,
+                        conversation_id=conv,
+                        collection_base=collection_base,
+                        user=user,
+                    )
+                )
+            else:
+                logger.info(
+                    "follow_up_questions_empty reason=follow_ups_disabled_by_request",
+                    extra={"follow_up_empty_reason": "follow_ups_disabled_by_request"},
+                )
         usage = build_usage_payload(chat_usage, follow_up_usage)
         total_ms = _elapsed_ms(wall_t0)
         latency_ms = build_latency_ms(
@@ -660,7 +880,19 @@ async def complete_rag_answer(
         retrieval_hits: list[dict] = []
         if include_retrieval_hits:
             retrieval_hits = _retrieval_hits_payload(prep.chunks_full, prep.reranked_for_hits)
-        return answer_out, citations_out, follow_ups, latency_ms, retrieval_hits, usage
+        rag_block = _attach_not_found_to_rag(
+            _build_rag_block(
+                question=question,
+                collection_base=collection_base,
+                prep=prep,
+                context_chunks=chunks_for_followups,
+                context_k=current_k,
+                k_max=k_max,
+                use_reranker=use_reranker,
+            ),
+            not_found_meta,
+        )
+        return answer_out, citations_out, follow_ups, latency_ms, retrieval_hits, usage, rag_block
 
 
 async def complete_rag_answer_stream(
@@ -786,6 +1018,7 @@ async def complete_rag_answer_stream(
                 answer_started = True
             t_chat = time.perf_counter()
             attempt_parts: list[str] = []
+            stream_live = not expand_on_not_found
             async for piece in chat_complete_stream(
                 base_url=prep.infer_base,
                 model=prep.model,
@@ -798,7 +1031,8 @@ async def complete_rag_answer_stream(
             ):
                 if piece.delta:
                     attempt_parts.append(piece.delta)
-                    yield {"type": "answer_delta", "text": piece.delta}
+                    if stream_live:
+                        yield {"type": "answer_delta", "text": piece.delta}
                 if piece.usage:
                     chat_usage = merge_usage(chat_usage, piece.usage)
             chat_ms_total += _elapsed_ms(t_chat)
@@ -833,43 +1067,81 @@ async def complete_rag_answer_stream(
                 "prev_k": current_k,
                 "next_k": next_k,
             }
-            yield {"type": "answer_start"}
             current_k = next_k
 
-        yield {"type": "answer_end"}
-        yield {"type": "latency", "phase": LATENCY_CHAT, "ms": chat_ms_total}
-
-        answer_out, citations_out = _with_citations(last_answer, last_citations)
-        yield {"type": "citations", "items": citations_out}
-
+        not_found_meta: dict[str, Any] | None = None
         follow_ups: list[str] = []
         follow_up_chat_ms = 0
         follow_up_rerank_ms = 0
         follow_up_usage: UsageTokens | None = None
-        if include_follow_up_questions:
-            follow_ups, follow_up_chat_ms, follow_up_rerank_ms, follow_up_usage = (
-                await generate_follow_ups(
-                    question=question,
-                    answer=answer_out,
-                    chunks_used=_chunks_for_follow_up_generation(chunks_for_followups),
-                    follow_up_candidates=prep.follow_up_candidates,
-                    follow_up_final=prep.follow_up_final,
-                    infer_base=prep.infer_base,
-                    model=prep.model,
-                    max_tokens_main=prep.max_tokens,
-                    rerank_url=prep.rerank_base,
-                    rerank_model=prep.rerank_model,
-                    request_id=request_id,
-                    session_id=session_id,
-                    trace_id=trace_id,
-                    conversation_id=conv,
-                )
+        if _answer_needs_more_context(last_answer) and expand_on_not_found:
+            (
+                answer_text,
+                follow_ups,
+                follow_up_chat_ms,
+                follow_up_rerank_ms,
+                follow_up_usage,
+                not_found_meta,
+            ) = await _resolve_not_found_turn(
+                question=question,
+                last_answer=last_answer,
+                chunks_for_followups=chunks_for_followups,
+                current_k=current_k,
+                include_follow_up_questions=include_follow_up_questions,
+                prep=prep,
+                follow_up_candidates=prep.follow_up_candidates,
+                follow_up_final=prep.follow_up_final,
+                request_id=request_id,
+                session_id=session_id,
+                trace_id=trace_id,
+                conversation_id=conv,
+                collection_base=collection_base,
+                user=user,
             )
+            if answer_text:
+                yield {"type": "answer_delta", "text": answer_text}
+            answer_out, citations_out = _with_citations(answer_text, [])
+        elif _answer_needs_more_context(last_answer):
+            answer_text = user_facing_answer(last_answer)
+            if expand_on_not_found and answer_text:
+                yield {"type": "answer_delta", "text": answer_text}
+            answer_out, citations_out = _with_citations(answer_text, last_citations)
         else:
-            logger.info(
-                "follow_up_questions_empty reason=follow_ups_disabled_by_request",
-                extra={"follow_up_empty_reason": "follow_ups_disabled_by_request"},
-            )
+            if expand_on_not_found:
+                final_text = last_answer
+                if final_text:
+                    yield {"type": "answer_delta", "text": final_text}
+            answer_out, citations_out = _with_citations(last_answer, last_citations)
+            if include_follow_up_questions:
+                follow_ups, follow_up_chat_ms, follow_up_rerank_ms, follow_up_usage = (
+                    await generate_follow_ups(
+                        question=question,
+                        answer=last_answer,
+                        chunks_used=_chunks_for_follow_up_generation(chunks_for_followups),
+                        follow_up_candidates=prep.follow_up_candidates,
+                        follow_up_final=prep.follow_up_final,
+                        infer_base=prep.infer_base,
+                        model=prep.model,
+                        max_tokens_main=prep.max_tokens,
+                        rerank_url=prep.rerank_base,
+                        rerank_model=prep.rerank_model,
+                        request_id=request_id,
+                        session_id=session_id,
+                        trace_id=trace_id,
+                        conversation_id=conv,
+                        collection_base=collection_base,
+                        user=user,
+                    )
+                )
+            else:
+                logger.info(
+                    "follow_up_questions_empty reason=follow_ups_disabled_by_request",
+                    extra={"follow_up_empty_reason": "follow_ups_disabled_by_request"},
+                )
+
+        yield {"type": "answer_end"}
+        yield {"type": "latency", "phase": LATENCY_CHAT, "ms": chat_ms_total}
+        yield {"type": "citations", "items": citations_out}
         yield {"type": "follow_up_questions", "items": follow_ups}
         yield {
             "type": "latency",
@@ -884,6 +1156,20 @@ async def complete_rag_answer_stream(
                 "type": "retrieval_hits",
                 "items": _retrieval_hits_payload(prep.chunks_full, prep.reranked_for_hits),
             }
+
+        rag_block = _attach_not_found_to_rag(
+            _build_rag_block(
+                question=question,
+                collection_base=collection_base,
+                prep=prep,
+                context_chunks=chunks_for_followups,
+                context_k=current_k,
+                k_max=k_max,
+                use_reranker=use_reranker,
+            ),
+            not_found_meta,
+        )
+        yield {"type": "rag", **rag_block}
 
         total_ms = _elapsed_ms(wall_t0)
         logger.info(
@@ -992,7 +1278,7 @@ def main(argv: list[str] | None = None) -> int:
     sid = os.environ.get("RAG_SESSION_ID") or str(uuid.uuid4())
 
     try:
-        answer, citations, follow_up_questions, latency_ms, _retrieval_hits, usage = run_async(
+        answer, citations, follow_up_questions, latency_ms, _retrieval_hits, usage, rag_block = run_async(
             complete_rag_answer(
                 args.question,
                 args.collection,
@@ -1025,6 +1311,7 @@ def main(argv: list[str] | None = None) -> int:
         "follow_up_questions": follow_up_questions,
         "latency_ms": latency_ms,
         "usage": usage,
+        "rag": rag_block,
     }
     if args.retrieval_hits:
         out["retrieval_hits"] = _retrieval_hits
