@@ -399,7 +399,8 @@ Correlation headers (`X-Request-Id`, `X-Session-Id`, `X-Trace-Id`) are forwarded
 
 ## Related docs
 
-- [smoke-tests.md](smoke-tests.md) — `curl` recipes
+- [smoke-test.md](smoke-test.md) — `curl` recipes
+- [eval.md](eval.md) — batch evaluation harnesses and scoring
 - [streaming.md](streaming.md) — SSE ordering, cancel, proxies
 - [access-control.md](access-control.md) — `X-User-*` semantics
 - [follow-up-questions.md](follow-up-questions.md) — follow-up pipeline
