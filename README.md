@@ -136,7 +136,7 @@ fastmcp run app/main.py:mcp --transport http --host 0.0.0.0 --port 8000 --path /
 
 `-m app.main` is the module-style entrypoint. In this mode, FastMCP uses the module's own startup (`mcp.run()`), so CLI transport/host/port flags are ignored.
 
-On **HTTP** transport, **MCP** clients use `http://127.0.0.1:8000/v1/mcp`. The same process also serves **`POST http://127.0.0.1:8000/v1/rag/query`** (JSON body; default response includes `answer`, `citations`, `follow_up_questions`, `latency_ms`, `usage`, and correlation fields `request_id`, `session_id`, `trace_id`, `conversation_id`) for plain `curl` scripts, plus liveness/readiness probes:
+On **HTTP** transport (k3s dev NodePort **`30183`** on `192.168.86.179`), **MCP** clients use `http://192.168.86.179:30183/v1/mcp`. The service also exposes **`POST http://192.168.86.179:30183/v1/rag/query`** (JSON body; default response includes `answer`, `citations`, `follow_up_questions`, `latency_ms`, `usage`, and correlation fields `request_id`, `session_id`, `trace_id`, `conversation_id`) for plain `curl` scripts, plus liveness/readiness probes. For a local `fastmcp run … --port 8000`, use `http://127.0.0.1:8000` instead.
 
 - `GET /health` — always `200` with `status`, `app_name`, `app_version` while the process is up (no I/O, no headers required).
 - `GET /version` — `200` with `app_name` and `app_version` (image `APP_VERSION` or package metadata).
@@ -144,10 +144,10 @@ On **HTTP** transport, **MCP** clients use `http://127.0.0.1:8000/v1/mcp`. The s
 - `GET /metrics` — Prometheus scrape endpoint (HTTP and RAG phase histograms/counters).
 
 ```bash
-curl -sS http://127.0.0.1:8000/health
-curl -sS http://127.0.0.1:8000/version
-curl -sS http://127.0.0.1:8000/ready
-curl -sS http://127.0.0.1:8000/metrics | head
+curl -sS http://192.168.86.179:30183/health
+curl -sS http://192.168.86.179:30183/version
+curl -sS http://192.168.86.179:30183/ready
+curl -sS http://192.168.86.179:30183/metrics | head
 ```
 
 Correlation on `/v1/rag/query` is **header-only** (never put `request_id`, `session_id`, or `trace_id` in the JSON body — **400**). `X-Request-Id` and `X-Session-Id` are optional: if either header is missing or blank, the server generates a UUID for that call. `X-Trace-Id` is optional and is not auto-generated. On **200** responses, `X-Request-Id`, `X-Session-Id`, and `X-Trace-Id` (when sent) are echoed in response headers so clients can confirm or read server-generated IDs (`curl -D -`).
@@ -155,7 +155,7 @@ Correlation on `/v1/rag/query` is **header-only** (never put `request_id`, `sess
 **Access control.** `/v1/rag/query` also reads `X-User-Id` / `X-User-Roles` / `X-User-Groups` / `X-User-Teams` (header-only; sending these in the body returns **400**). Roles default to `["anyuser"]` when absent so chunks tagged `access.roles ∋ "anyuser"` form the public set; `admin` bypasses filtering; chunks without `payload.access` are deny-by-default for non-admins. The match rule is **ANY-OVERLAP across dimensions** (`should` in Qdrant). `X-User-Id` is echoed on **200** alongside the correlation headers. Full semantics, payload shape, and `curl` examples: [`docs/access-control.md`](docs/access-control.md).
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
+curl -sS -X POST http://192.168.86.179:30183/v1/rag/query \
   -H "Content-Type: application/json" \
   -d '{
     "question": "what is taixing visa",
@@ -168,7 +168,7 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
 With explicit correlation (recommended for gateways and log stitching):
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
+curl -sS -X POST http://192.168.86.179:30183/v1/rag/query \
   -H "Content-Type: application/json" \
   -H "X-Request-Id: req-abc123" \
   -H "X-Session-Id: ses-xyz789" \
@@ -190,7 +190,7 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
 **Streaming (SSE).** For chat-style UIs, streaming is the default (`"stream": true` when omitted). `Accept: text/event-stream` also forces SSE, and set `"stream": false` for non-stream JSON (query-param triggers like `?stream=1` are not supported). The stream is `text/event-stream`: `meta` and early `latency` phases, then optional `retrieval_widen` events (context slice retry after `NOT_FOUND` / empty — **no** streamed `NOT_FOUND` text), then `answer_start` and `answer_delta` chunks for the **final** answer only, `answer_end`, `citations`, `follow_up_questions`, `usage`, remaining `latency` lines (including `total` wall time), and `done`. Errors after the first frame use `event: error` then `event: done`. Response headers match JSON mode plus `Cache-Control: no-cache` and `X-Accel-Buffering: no`. **Pause / Stop from the UI** = abort the `fetch` (use `AbortController`); the server cancels the upstream chat completion automatically and frees the GPU slot. Details and a JS / `httpx` cancel example: [`docs/streaming.md`](docs/streaming.md).
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
+curl -sS -X POST http://192.168.86.179:30183/v1/rag/query \
   -H "Content-Type: application/json" \
   -H "X-Request-Id: req-abc123" \
   -H "X-Session-Id: ses-xyz789" \
@@ -203,7 +203,7 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
   }'
 ```
 
-See also [`docs/schema.md`](docs/schema.md) (request/response fields), [`docs/streaming.md`](docs/streaming.md), [`docs/access-control.md`](docs/access-control.md), [`docs/smoke-tests.md`](docs/smoke-tests.md), [`docs/follow-up-questions.md`](docs/follow-up-questions.md), and [`docs/log-json-schema.md`](docs/log-json-schema.md).
+See also [`docs/schema.md`](docs/schema.md) (request/response fields), [`docs/streaming.md`](docs/streaming.md), [`docs/access-control.md`](docs/access-control.md), [`docs/smoke-test.md`](docs/smoke-test.md), [`docs/eval.md`](docs/eval.md), [`docs/follow-up-questions.md`](docs/follow-up-questions.md), and [`docs/log-json-schema.md`](docs/log-json-schema.md).
 
 **Cursor** (`.cursor/mcp.json` or global MCP settings): point the server at the repo root so `.env` resolves; use your venv’s `python` if needed:
 
@@ -237,8 +237,11 @@ MCP tool `rag_query` accepts the same optional fields as the HTTP body, includin
 
 ## Evaluation
 
-```bash
-python eva/test.py -i eva/dataset/dataset-gold-test-1.0.0.json -o eva/result/dataset-gold-test-1.0.0.json
+Batch eval harnesses, recommended HTTP flags (`stream: false`, `expand_on_not_found: false`), gold datasets, and scoring metrics: **[docs/eval.md](docs/eval.md)**.
 
-python eva/metric.py -i eva/result/dataset-gold-test-1.0.0.json -o eva/result/dataset-gold-test-eva-1.0.0.json
+Quick reference — end-to-end gold Q&A + LLM judge ([layer-rag-evaluation-v1](https://github.com/taixingbi/layer-rag-evaluation-v1)):
+
+```bash
+python3 main.py -i dataset/dataset-gold-test-1.0.0.json -o result/dataset-gold-test-1.0.0.json \
+  --base-url http://192.168.86.179:30183 --rag-max-concurrency 1
 ```
