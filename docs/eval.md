@@ -76,74 +76,27 @@ Response fields used by harnesses: `answer`, `citations`, `latency_ms`, `usage`,
 
 ---
 
-## Evaluation harnesses (external repos)
+## Evaluation harness — [layer-rag-evaluation-v1](../../layer-rag-evaluation-v1)
 
-### 1. End-to-end Q&A + LLM judge — [layer-rag-evaluation-v1](https://github.com/taixingbi/layer-rag-evaluation-v1)
-
-Batch gold JSON → fill `inference-output` via `/v1/rag/query` → attach per-row **metrics** (LLM-as-judge or heuristics).
-
-**One-shot** (RAG fill + metrics):
+Gold **JSONL** from ingested `points_*.json` ([eval.md](../../layer-rag-evaluation-v1/docs/eval.md)).
 
 ```bash
 cd layer-rag-evaluation-v1
 python3.11 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e .
 
-python3 main.py \
-  -i dataset/dataset-gold-test-1.0.0.json \
-  -o result/dataset-gold-test-1.0.0.json \
-  --base-url http://127.0.0.1:8000 \
-  --rag-max-concurrency 1 \
-  --judge-max-concurrency 8
-```
-
-**Standalone steps:**
-
-```bash
-python3 rag_query.py -i dataset/dataset-gold-test-1.0.0.json -o result/dataset-gold-test-1.0.0.json
-python3 metric.py -i result/dataset-gold-test-1.0.0.json -o result/dataset-gold-test-1.0.0.json
-```
-
-**Gold row shape** (JSON array):
-
-| Field | Role |
-|-------|------|
-| `input` | Question |
-| `output` | Reference answer |
-| `inference-output` | Filled by RAG (`answer` from API) |
-
-After `metric.py`, each row includes a `metrics` object when scoring succeeds.
-
-**Judge metrics** (when `LLM_JUDGE_URL` or `INFERENCE_URL` is set in `.env`):
-
-| Key | Meaning |
-|-----|---------|
-| `faithfulness_grounding` | Grounding vs gold and citation excerpts |
-| `answer_correctness` | Alignment with gold answer |
-| `context_relevance` | How well excerpts support the answer |
-| `answer_relevance` | Whether the answer addresses the question |
-| `hallucination_rate_proxy` | Contradiction / fabrication vs gold (lower is better) |
-
-Use `--heuristic-only` to skip the LLM judge. See that repo’s README for concurrency, retries, and `.env` variables.
-
-> **Note:** Eval HTTP clients must send `stream: false` and correlation ids via **headers**. If a client still puts `request_id` / `session_id` in the JSON body, the server returns **400** — update the client to match the contract above.
-
----
-
-### 2. Retrieval + must-contain — [layer-rag-evaluation-v1](../../layer-rag-evaluation-v1) `run_eval.py`
-
-Gold **JSONL** generated from ingested `points_*.json` ([gold-dataset.md](../../layer-rag-evaluation-v1/docs/gold-dataset.md)). Scores substring `must_contain`, citation `source` match, and optional **Recall@k** from `retrieval_hits`.
-
-```bash
-cd layer-rag-evaluation-v1
-python3 rag_gold_eval/run_eval.py \
+python -m app.eval.run_eval \
   --gold data_dev/gold_dataset/easy_single_hop.jsonl \
   --rag-base-url http://127.0.0.1:8000 \
   --collection-base taixing_knowledge \
-  --recall-at-k 5,10,40
+  --recall-at-k 5,10,40 \
+  --report-json data_dev/report/rag_eval_report.json \
+  --summary-json data_dev/report/rag_eval_summary.json
 ```
 
 With `--skip-retrieval-hits`, retrieval rank metrics are omitted (answer-only scoring).
+
+> **Note:** Eval HTTP clients must send `stream: false` and correlation ids via **headers**. If a client still puts `request_id` / `session_id` in the JSON body, the server returns **400** — update the client to match the contract above.
 
 ---
 
@@ -224,9 +177,8 @@ For comparable batch timings, use `expand_on_not_found: false` and `include_foll
 
 1. **Ingest** target collection (`layer-rag-ingest-v1` `./scripts/data1.sh dev|prod`).
 2. **Smoke** one question via [smoke-test.md](smoke-test.md).
-3. **Retrieval eval** — `run_eval.py` on `easy_single_hop.jsonl`; track Recall@k and `must_contain_pass` rate.
-4. **End-to-end eval** — `layer-rag-evaluation-v1` `main.py`; track judge means and latency.
-5. **Compare** result JSON across prompt / model / `k_max` changes; keep `collection_base`, `ENV`, and embed model fixed.
+3. **Retrieval eval** — `python -m app.eval.run_eval` on `easy_single_hop.jsonl`; track Recall@k and `must_contain_pass` rate.
+4. **Compare** result JSON across prompt / model / `k_max` changes; keep `collection_base`, `ENV`, and embed model fixed.
 
 Pin in eval reports: git SHA of **layer-rag-query**, **layer-rag-ingest** (KB version), `INFERENCE_MODEL`, `EMBEDDING_MODEL`, `k`, `k_max`, and access headers used.
 
@@ -238,8 +190,8 @@ Pin in eval reports: git SHA of **layer-rag-query**, **layer-rag-ingest** (KB ve
 - [streaming.md](streaming.md) — SSE (not used for batch eval)
 - [access-control.md](access-control.md) — `X-User-*` headers for role-gated gold
 - [follow-up-questions.md](follow-up-questions.md) — disable for faster eval runs
-- [layer-rag-evaluation-v1 README](https://github.com/taixingbi/layer-rag-evaluation-v1) — judge metrics and `main.py` flags
-- [layer-rag-evaluation-v1 gold-dataset.md](../../layer-rag-evaluation-v1/docs/gold-dataset.md) — JSONL gold generation and `run_eval.py`
+- [layer-rag-evaluation-v1 README](https://github.com/taixingbi/layer-rag-evaluation-v1) — JSONL gold eval workflow
+- [layer-rag-evaluation-v1 eval.md](../../layer-rag-evaluation-v1/docs/eval.md) — gold JSONL generation and `app.eval.run_eval`
 - [layer-rag-evaluation-v1 eval.md](../../layer-rag-evaluation-v1/docs/eval.md) — end-to-end eval workflow
 
 

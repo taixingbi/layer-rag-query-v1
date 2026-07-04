@@ -239,9 +239,11 @@ MCP tool `rag_query` accepts the same optional fields as the HTTP body, includin
 
 Batch eval harnesses, recommended HTTP flags (`stream: false`, `expand_on_not_found: false`), gold datasets, and scoring metrics: **[docs/eval.md](docs/eval.md)**.
 
-Quick reference — end-to-end gold Q&A + LLM judge ([layer-rag-evaluation-v1](https://github.com/taixingbi/layer-rag-evaluation-v1)):
+Quick reference — JSONL gold eval ([layer-rag-evaluation-v1](https://github.com/taixingbi/layer-rag-evaluation-v1)):
 
 ```bash
-python3 main.py -i dataset/dataset-gold-test-1.0.0.json -o result/dataset-gold-test-1.0.0.json \
-  --base-url http://192.168.86.179:30183 --rag-max-concurrency 1
+python -m app.eval.run_eval \
+  --gold data_dev/gold_dataset/ \
+  --report-json data_dev/report/rag_eval_report.json \
+  --summary-json data_dev/report/rag_eval_summary.json
 ```
